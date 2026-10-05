@@ -10,10 +10,16 @@ against the installed Hermes v0.21.5 source on this machine (2026-09-24).
 ## 1. What we are building
 
 A single FastAPI/Express app — **lars-pocket-app** — that gives the user a
-**lars15-style HUD** (dark sci-fi panels, jobs/machines/usage) with the
-**pocket-tts browser voice stack** (armed mic, barge-in, semi-streaming chat,
-Pocket TTS), where the **conversation runs on a REAL live Lars Hermes session**
-via the `hermes serve` JSON-RPC/WebSocket gateway.
+**lars15-style HUD** (as a UI *template only*) with the **pocket-tts browser voice
+stack** (mic on/off, re-arm, barge-in, semi-streaming chat, Pocket TTS), where the
+**conversation runs on a REAL live Lars Hermes session** via the
+`hermes serve` JSON-RPC/WebSocket gateway.
+
+**Scope: streamline hard — voice chat to Lars FIRST.** The local-resource
+cosmetic panels (Models Loadout, Voice Link, Turn Metrics, Diagnostics) and the
+Kanban/Dashboard iframes are **NOT wired in for v1** — render them as static
+placeholders in the stolen lars15 UI so the layout looks right, then the user
+fines-tunes the UI after the voice works. lars15's own typing box is kept.
 
 Pipeline (browser-driven, no SFU / agent worker):
 
@@ -55,9 +61,16 @@ Web Audio gapless playback (mic re-opens = barge-in)
 - The broken `voice link error: could not establish signal connection` retry loop.
 
 ### lars15 — KEEP (steal)
-- `server/hud/index.html` — the dark sci-fi HUD styling + panel layout.
-- Panel feeds: `jobs`, `machines` (psutil), `usage`, `latency` — all already work off `:8642` via the allowlist proxy. (Optional for v1.)
-- `hermes-plugin/hud_display` — the Hermes-side tool (`hud_display`/`hud_dismiss`, `toolset="hud"`). It POSTs to `http://127.0.0.1:8765/api/summon` — **NOTE: re-point that host/port** since :8765 was the old server.
+- `server/hud/index.html` — the dark sci-fi HUD styling + layout. Used as a **template**.
+- Cohort of cosmetic panels (Models Loadout / Voice Link / Turn Metrics / Diagnostics): **NOT wired for v1, placeholder-only**.
+- The **typing box** in the HUD — keep it working (sends the same text to Hermes as the voice does).
+- `hermes-plugin/hud_display` — Hermes-side tool for HUD summons. **Out of scope for v1** (see Phase 3).
+
+> **OLD REPS ARE READ-ONLY**: `AxiomLC/lars-pocket-tts` is a **working beta — DO NOT touch**. We borrow its `public/` voice frontend pattern only. (A prior accidental deprecation-push to it was fully reverted to commit `37b80de`.)
+
+### UI controls (from the pocket-tts app)
+- **Mic button (on/off)** for voice chat — toggle starts/stops the conversation mic.
+- **"re-arm" button** next to the mic — explicitly re-open the mic after a turn / to keep talking, as in the pocket-tts app.
 
 ### pocket-tts app — KEEP (this is the working voice core)
 - `public/index.html`, `public/app.js`, `public/state.js`, `public/style.css`
@@ -143,16 +156,18 @@ Do in this order. Each step ends runnable/testable.
    - re-open/re-auth on drop (single-use ticket ⇒ re-mint per connection).
 6. Test headless: a tiny script opens the WS and sends a prompt; confirm a Lars reply streams back (this proves live-session transfer before UI wiring).
 
-**Phase 3 — HUD skins + panels (steal lars15)**
-7. Bring in lars15 `server/hud/index.html` styling; mount the pocket-tts voice panel.
-8. Optional panels: `jobs/machines/usage` via the `:8642` allowlist proxy (`/api/hermes/{path}` pattern from server15.py).
-9. Wire the `hud_display` plugin's output — these arrive as **tool events on `/api/events`** sidecar, and the tool handler POSTs to `/api/summon`: **re-point `SUMMON_URL`** in `hermes-plugin/hud_display/tools.py` from `:8765` to this app (`lars-pocket-app`'s own `/api/summon`), and implement `/api/summon` here to drive the HUD popup iframes (Kanban `/kanban`, Hermes dashboard via `:9119` iframe, `/chat`).
+**V1 acceptance = voice chat to a LIVE Lars session round-trips** (speak → Lars replies aloud, state on the real Hermes session, barge-in works). Everything cosmetic comes after.
+
+**Phase 3 — HUD skin from lars15 + placeholders (streamlined)**
+7. Port lars15 `server/hud/index.html` styling into this app's `public/`; mount the pocket-tts voice panel (mic on/off + re-arm) and keep the typing box.
+8. Render the cosmetic panels (**Models Loadout, Voice Link, Turn Metrics, Diagnostics**) as **static placeholders** — no data wiring, no `:8642` proxy, no psutil. (Defer actual feeds to a later tuning pass the user drives.)
+9. **Defer** `hud_display` / `/api/summon` / Kanban / `:9119` iframe wiring entirely — out of v1 scope until voice chat is proven.
 
 **Phase 4 — LLM speed lever (later)**
 10. Because the frontend speaks OpenAI-style SSE, the LLM brain is swappable. To use **Cerebras gpt-oss-120b**, either route Hermes' profile to a Cerebras upstream, or bypass Hermes with a direct Cerebras chat-completions call — swap URL/key/model in the `/api/chat` adapter only. No UI change.
 
-**Phase 5 — Deprecate / cleanup**
-11. Delete LiveKit worker + `:7880`/cloud WS wiring from the old lars15 or leave inert. Mark old repo state deprecated.
+**Phase 5 — Cleanup (do NOT touch old repos)**
+11. Delete/leave inert the LiveKit worker + `:7880`/cloud WS wiring *inside this app's own code*. **Do not modify or re-push `AxiomLC/lars-pocket-tts`** (working beta).
 
 ---
 
@@ -188,8 +203,8 @@ curl http://localhost:PORT/api/config        # this app
 ---
 
 ## 9. Status tracker
-- [ ] Phase 0 — scaffold repo + git (this doc)
-- [ ] Phase 1 — port pocket-tts voice frontend + server
+- [x] Phase 0 — scaffold repo + git + build doc (done)
+- [ ] Phase 1 — port pocket-tts voice frontend (mic on/off, re-arm) + server
 - [ ] Phase 2 — Hermes WS brain (`/api/console` + ticket) — **critical path**
 - [ ] Phase 3 — HUD skins/panels + `hud_display`/`/api/summon` re-wiring
 - [ ] Phase 4 — Cerebras LLM lever (later)
