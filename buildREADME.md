@@ -213,3 +213,83 @@ curl http://localhost:PORT/api/config        # this app
 - [ ] Phase 3 — HUD skins/panels + `hud_display`/`/api/summon` re-wiring
 - [ ] Phase 4 — Cerebras LLM lever (later)
 - [ ] Phase 5 — deprecate LiveKit path
+
+---
+
+## 10. Hermes WS build reference (load-bearing facts — do not re-derive)
+
+Researched 2026-10 from the installed v0.21.5 source. These are the facts a
+build session needs; keep them in one place.
+
+### What `hermes serve` is
+- The **JSON-RPC/WebSocket gateway the desktop app and remote clients connect to** (verbatim from `hermes serve --help`).
+- Default `--port 9119`; `--port 0` = OS auto-assign (print the port it chose).
+- **Separate** from `:8642` (the REST API server from `hermes gateway run`). Profile chat does **not** need `:8642`.
+- **Current state: `hermes serve` is NOT bound** (netstat showed only `:8642`). We must start it — use a free port (e.g. `--port 8643`) to avoid clashing with the Hermes Desktop GUI which owns `:9119`.
+
+### WS route table (source: `hermes_cli/web_routers/chat_ws.py`)
+| Route | Type | Purpose |
+|---|---|---|
+| `/api/console` | WS | **In-process curated profile chat**, JSON frames, `?profile=` — THE target |
+| `/api/pty` | WS | PTY terminal chat — **needs WSL2 on Windows**, skip |
+| `/api/ws` | WS | Gateway sidecar |
+| `/api/pub`, `/api/events` | WS | Publish + event sidecars (tool events, HUD summons) |
+| `POST /api/auth/ws-ticket` | HTTP | Issue a single-use WS upgrade ticket (gated mode) |
+
+### Connect recipe — `/api/console`
+1. (Gated only) `POST /api/auth/ws-ticket` → single-use ticket, **30 s TTL** (`ws_tickets.py: mint_ticket`, 32 random bytes, base64url).
+2. `ws://127.0.0.1:<port>/api/console?profile=lars&ticket=<ticket>` (loopback mode may need no ticket).
+3. Exchange **JSON frames**. Profile preselected → state is on the same profile RPC the desktop uses → **session transfers by construction**.
+
+### Auth gates (`_ws_gate`) — close codes to handle
+- **4404** `embedded chat disabled` — `_DASHBOARD_EMBEDDED_CHAT_ENABLED` must be on.
+- **4401** `auth: <reason>` — bad/missing ticket/credential.
+- **4403** `host/origin mismatch` — browser `Origin` must match allowed host.
+- **4408** client not allowed.
+- `_ws_auth_mode()`: `gated` (auth_required) | `insecure` (non-loopback bind) | `loopback` (localhost default).
+
+### Frontend contract (unchanged from pocket-tts)
+- `app.js` already parses **OpenAI-style SSE**: `data: {choices:[{delta:{content}}]}` … `data: [DONE]`. The server adapter must translate Hermes `text` deltas into that shape. This is ALSO what makes the Cerebras sidecar drop-in (same SSE shape).
+
+### Profile + helpers
+- Profile name = `lars` (`server15.yaml: profile_session: lars`).
+- Single-use tickets expire in 30 s → on a WS drop, re-mint per reconnect.
+
+---
+
+## 11. Brain-routing toggle: Hermes Lars profile **vs** Cerebras sidecar
+
+A planned **large toggle** on the server (`.env` switch + config exposed to the
+UI). Default for v1 = **Hermes Lars profile** (full brain, skills, memory, HUD
+tools). The alternative = a **lightweight direct-Cerebras path** measured for
+latency (ultra-fast, more realistic streaming), kept deliberately thin.
+
+### Why a Cerebras sidecar (the user's rationale)
+- Test raw **latency** of the voice→gpt-oss-120b→TTS loop with no Hermes-profile overhead (no skills auto-load, no heavy memory, no platform routing).
+- A **lightweight prompt + minimal skills** compared to going through the Hermes profile.
+- **Persist via Hermes as needed:** the sidecar can write a **truncated memory** to Hermes and **tool-call a Hermes memory** on demand — async/pull, not in the hot path.
+
+### Design sketch (code-level)
+- **Switch:** `BRAIN=hermes|cerebras` in `.env`; exposed as `GET /api/config` → `brain` so the UI can show/select it. `server.js` holds two chat backends behind one `POST /api/chat` :
+  ```js
+  // /api/chat — same OpenAI-SSE output shape whatever the brain
+  const brain = env.BRAIN || "hermes";
+  if (brain === "cerebras")   return streamCerebras(req,res,text);   // direct chat-completions SSE
+  else                        return streamHermesProto(res,text);   // /api/console WS -> translate
+  ```
+- **Cerebras backend** (`streamCerebras`): fetch `https://api.cerebras.ai/v1/chat/completions` with `stream:true`, `model: gpt-oss-120b`, the **HUD/HUD-plugin prompt** + a short [user]+tools context, pipe the `data:` SSE straight through (it already matches `app.js`). Truncate history (`HISTORY_TURNS`) like pocket-tts does.
+- **Hermes persistence (async, not hot-path):** after a sidecar turn, optionally `POST` a one-line summary into the `lars` profile session (or a Hermes memory endpoint) so the real profile stays aware; and if the sidecar needs real Hermes data, it can call a Hermes memory/tool once — guarded so it never blocks the voice loop.
+- **Minimal tool calls for the sidecar:** allow a small allowlist (e.g. the HUD/Kanban display + a Hermes memory read) by calling the Hermes `/api/events`/tool surface out-of-band; the UI already renders those as panels/iframes.
+
+### What this buys
+A clean **A/B latency harness**: same UI, same TTS, same microphone — swap only the brain. Lets us measure Hermes-profile-vs-direct-Cerebras time-to-first-token and end-to-end, then decide the default.
+
+> **Not in v1 scope** — the toggle is designed now, built after Phase 2/3 prove the Hermes path. But the SSE-front contract makes it a focused, low-risk addition.
+
+---
+
+## 12. Execution handoff (for a fresh build session)
+
+If this chat is compacted, start the build from this repo's README. The one-line plan:
+
+> Build in `AxiomLC/lars-pocket-app` (local `C:\lars-pocket-app`). **Option B**: bring the pocket-tts voice chassis in as-is (Phase 1) → swap Groq for the Hermes `/api/console` WS brain (Phase 2, §10 facts) and prove a live Lars streaming voice round-trip → only then dump the whole lars15 HUD + `hud_display` plugin + Kanban/Dashboard/Chat boxes on top (Phase 3). `lars-pocket-tts` is READ-ONLY (working beta, `37b80de`) — never touch. Later: Cerebras sidecar toggle (§11) + cleanup LiveKit (§Phase 5).
