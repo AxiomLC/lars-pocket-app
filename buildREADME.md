@@ -116,15 +116,37 @@ message you send from the browser shows up / answers on the real profile session
 4. `prompt.submit` with the user's speech text.
 5. Stream `message.delta` → SSE; `session.interrupt` for barge-in.
 
-### Auth (gate mode determines it)
+### Auth (gate mode determines it) — VERIFIED live 2026-10
 `_ws_auth_mode()` returns `gated` | `insecure` | `loopback`.
-- **loopback** (default localhost bind): pass the legacy `?token=_SESSION_TOKEN`
-  (set it by starting `hermes serve` with `HERMES_DASHBOARD_SESSION_TOKEN`).
+- **loopback** (default localhost bind): an external WS client **MUST pass
+  `?token=_SESSION_TOKEN`** — verified: no token and wrong token were both
+  rejected; only the matching token got `gateway.ready`. (The browser dashboard
+  *looks* token-free only because the page auto-injects the token.)
+- **Token source**: `HERMES_DASHBOARD_SESSION_TOKEN` **env var**, read at startup
+  (`web_server.py`: `os.environ.get(...) or secrets.token_urlsafe(32)`). NOT in
+  config.yaml. Our `.env` `HERMES_TOKEN` must match the value the `:9119`
+  process was started with.
+- **This machine**: Startup VBS `Hermes_Dashboard.vbs` launches
+  `hermes dashboard --port 9119 --host 127.0.0.1 --no-open` with
+  `HERMES_DASHBOARD_SESSION_TOKEN=lars-voice-bridge-2026` — our `.env` matches.
 - **gated** (`auth_required`): mint a single-use 30 s ticket via
   `POST /api/auth/ws-ticket`, send `?ticket=`; re-mint on reconnect.
 Close codes on `/api/*` chat routes if rejected: `4401` bad auth, `4403`
 host/origin mismatch, `4404` embedded chat disabled (on by default),
 `4408` peer not allowed. The `/api/ws` sidecars close `4403`/`4401` on the same gates.
+
+### "Two Gateways" — confirmed (official docs)
+Two adjacent-but-separate surfaces, per hermes-agent docs:
+1. **The API server** on `:8642` — optional OpenAI-compatible HTTP endpoint,
+   `API_SERVER_ENABLED=false` by default, needs `API_SERVER_KEY`. CLI via
+   `hermes gateway run`. This machine's config.yaml does **NOT** enable it.
+2. **The messaging gateway** — auto-starts with Hermes (desktop-managed,
+   restartable in the desktop UI, shows in desktop logs). It is the single
+   background process that connects messaging platforms, **handles sessions,
+   runs cron jobs every 60 s, delivers voice messages**. Confirmed running here
+   as `hermes gateway run` (PID 26316) parented by the desktop app.
+Our local web app needs neither — we go over `:9119` `/api/ws` JSON-RPC, which
+reaches the live session/cron/messaging world through the desktop gateway.
 
 ---
 
