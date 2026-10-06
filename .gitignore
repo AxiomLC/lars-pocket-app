@@ -11,7 +11,17 @@ logs/
 models/
 bin/
 __pycache__/
+*.log
+
+# Local dev scratch (agent temp scripts / launchers)
+.zed/
 
 # OS
 Thumbs.db
 .DS_Store
+desktop.ini
+
+# Editors
+.idea/
+.vscode/
+*.swp
