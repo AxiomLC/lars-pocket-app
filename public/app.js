@@ -106,6 +106,10 @@ function log(msg, level = '') {
 
   const method = { err: 'error', warn: 'warn', ok: 'info' }[level] || 'log';
   console[method](`[Voice] ${msg}`);
+
+  // Mirror to the server's self-pruning log file (fire-and-forget; never blocks
+  // or delays the UI — lets an AI/debugger read the same lines we see in the panel).
+  try { fetch('/api/log', jsonPost({ line: `[${new Date().toLocaleTimeString()}] ${msg}`, level })); } catch {}
 }
 
 /* ---- 3c. Misc UI helpers ---- */

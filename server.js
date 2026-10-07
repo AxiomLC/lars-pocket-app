@@ -53,6 +53,19 @@ function pipeReadableTo(res, source, headers) {
   s.pipe(res);
 }
 
+// Self-pruning mirror of the browser log panel: keeps only the newest 200 lines.
+const UI_LOG = path.join(__dir, 'logs', 'ui.log');
+const UI_LOG_LINES = 200;
+function appendUiLog(line) {
+  try {
+    let lines = [];
+    try { lines = fs.readFileSync(UI_LOG, 'utf8').split(/\r?\n/); } catch {}
+    lines.push(line);
+    if (lines.length > UI_LOG_LINES) lines.splice(0, lines.length - UI_LOG_LINES);
+    fs.writeFileSync(UI_LOG, lines.join('\n') + '\n');
+  } catch {}
+}
+
 /* =====================================================================
    HERMES LEG — /api/ws JSON-RPC -> OpenAI-SSE
    Auto-discovers the session token from the dashboard page, keeps one
@@ -226,6 +239,14 @@ http.createServer(async (req, res) => {
   const ac = new AbortController();
   res.on('close', () => ac.abort());
   try {
+    // Mirror the browser UI's log panel to a self-pruning file for AI/debugging.
+    if (req.method === 'POST' && req.url === '/api/log') {
+      let line = '';
+      try { line = JSON.parse(await readBody(req)).line || ''; } catch {}
+      if (line) appendUiLog(line);
+      res.writeHead(204); return res.end();
+    }
+
     if (req.method === 'GET' && req.url === '/api/config') {
       let pocketUp = false;
       try { pocketUp = (await fetch(POCKET_BASE + '/health', { signal: AbortSignal.timeout(800) })).ok; } catch {}
@@ -247,7 +268,12 @@ http.createServer(async (req, res) => {
       const { text } = JSON.parse(await readBody(req));
       const form = new FormData();
       form.append('text', text);
-      if (E.POCKET_VOICE) form.append('voice_url', E.POCKET_VOICE);
+      // voice_url on pocket-tts must be an http(s):// or hf:// URL to a voice
+      // conditioning file (custom voice clone). A bare name (e.g. "alba") is
+      // rejected with 400 "voice_url must start with http://...". If POCKET_VOICE
+      // isn't a real URL, omit it and let the server use its built-in voice.
+      const v = (E.POCKET_VOICE || '').trim();
+      if (/^(https?:\/\/|hf:\/\/)/i.test(v)) form.append('voice_url', v);
       const upstream = await fetch(POCKET_URL, { method: 'POST', body: form, signal: ac.signal });
       if (!upstream.ok) return sendJson(res, 502, { error: `Pocket TTS ${upstream.status}: ${(await upstream.text()).slice(0, 200)}` });
       return pipeReadableTo(res, upstream, { 'Content-Type': 'audio/wav' });
