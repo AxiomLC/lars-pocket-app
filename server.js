@@ -111,9 +111,9 @@ function connectHermes() {
       const type = params.type || '';
       // Streaming chat chunks: message.delta -> text lives in params.payload.text.
       if (type === 'message.delta' && typeof params?.payload?.text === 'string') {
-        hermesOnDelta(params.payload.text);
+        hermesOnEvent('message.delta', params);
       } else if (type === 'message.complete') {
-        hermesOnComplete();
+        hermesOnEvent('message.complete', params);
       } else if (type === 'gateway.ready') {
         hermesReady = true;
         console.log('[hermes] gateway.ready');
@@ -137,21 +137,44 @@ function hermesRpc(method, params, timeoutMs = 10000) {
   });
 }
 
-// Active turn: the streaming relay + abort for barge-in.
-let activeTurn = null;
-function hermesOnDelta(text) {
-  if (!activeTurn) return;
-  activeTurn.push(text);
+// ---- Turn-scoped streaming relay ----
+// Each /api/chat call gets a `turn`. Incoming message.delta / message.complete are
+// routed to whichever turn is CURRENTLY running. A per-turn token guards against
+// the barge-in overlap where stale events from an interrupted turn would otherwise
+// resolve a brand-new turn's promise or get pushed into its stream.
+let curTurn = null;          // { id, push, promise:{resolve}, interruptSent }
+let larsSessionId = null;
+let settleUntil = 0;         // drop inbound events briefly after session.interrupt
+let lastDeltaAt = 0;         // when the last message.delta arrived (for drain detection)
+let interruptAt = 0;         // when the most recent session.interrupt was sent
+
+const HLOG = path.join(__dir, 'logs', 'server.log');
+function hlog(line) { try { fs.appendFileSync(HLOG, `[${new Date().toISOString()}] ${line}\n`); } catch {} }
+
+/** Route one streaming event (message.delta / message.complete) to the live turn. */
+function hermesOnEvent(type, params) {
+  const deltaText = params?.payload?.text;
+  if (typeof deltaText === 'string' && type === 'message.delta') {
+    lastDeltaAt = Date.now();                    // even a registered-stale delta means "still draining"
+    if (Date.now() < settleUntil) { hlog(`event dropped (settle): ${deltaText.slice(0,40)}`); return; }
+    const t = curTurn;
+    if (!t) { hlog(`message.delta dropped (no live turn): ${deltaText.slice(0,40)}`); return; }
+    t.push(deltaText);
+  } else if (type === 'message.complete') {
+    if (Date.now() < settleUntil) { hlog('message.complete dropped (settle)'); return; }
+    const t = curTurn;
+    if (!t) { hlog('message.complete dropped (no live turn)'); return; }
+    // Only end this turn if it has actually produced content, so a stale complete
+    // from the interrupted prior turn can't truncate a fresh turn to empty.
+    if (t.chars > 0) t.promise.resolve();
+    else hlog(`message.complete ignored for empty turn (chars=${t.chars})`);
+  }
 }
-function hermesOnComplete() {
-  if (activeTurn && activeTurn.promise) activeTurn.promise.resolve();
-}
+
 // The live Lars session we attach to (created fresh, cached across turns so the
 // app owns one continuous conversation; most_recent returns a stale api_server row).
-let larsSessionId = null;
 async function getOrCreateSession() {
   if (larsSessionId) return larsSessionId;
-  // Pass the profile so the session runs under the lars profile (not default).
   const c = await hermesRpc('session.create', { title: `voice-${Date.now()}`, profile: HERMES_PROFILE });
   larsSessionId = c?.result?.session_id || null;
   if (!larsSessionId) console.warn('[hermes] session.create failed:', JSON.stringify(c?.error));
@@ -159,43 +182,72 @@ async function getOrCreateSession() {
 }
 
 // Turn relay: collect message.delta into an SSE stream; end on message.complete.
-function streamHermesChat(req, res, messages, ac) {
+function streamHermesChat(req, res, messages) {
   const userText = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-  const sink = {
-    push(text) { if (!text) return; res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: text } }] })}\n\n`); },
-  };
-  activeTurn = sink;
+
   let done = false;
-  const close = () => { if (!done) { done = true; activeTurn = null; } };
-  // Resolve when message.complete arrives (or fallback on RPC return / timeout).
-  let turnComplete;
-  const completePromise = new Promise(r => { turnComplete = r; });
-  activeTurn.promise = { resolve: turnComplete };
+  const close = () => { if (!done) { done = true; if (curTurn?.id === turn.id) curTurn = null; } };
   const endStream = () => { if (done) return; res.write('data: [DONE]\n\n'); close(); res.end(); };
+
+  // Per-turn promise + relay (registered as the current turn).
+  const turn = {
+    id: hermesSeq++, chars: 0,
+    push(text) {
+      this.chars += text.length;
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: text } }] })}\n\n`);
+    },
+    promise: null,
+  };
+  let turnComplete;
+  turn.promise = { resolve: () => {} };
+  const completePromise = new Promise(r => { turn.promise.resolve = r; });
+  curTurn = turn;
 
   (async () => {
     try {
       const sid = await getOrCreateSession();
       if (!sid) throw new Error('could not obtain a Hermes session');
+      // After a barge-in interrupt, wait for the aborted turn to drain (no deltas for
+      // ~500ms, capped at ~3s) so its leftover tail doesn't mix into this new turn.
+      if (interruptAt && Date.now() - interruptAt < 3000) {
+        const quietMs = 500;
+        while (Date.now() - lastDeltaAt < quietMs) {
+          if (Date.now() - interruptAt > 3000) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        hlog(`drained after interrupt (quiet since ${Date.now() - lastDeltaAt}ms)`);
+      }
+      hlog(`submit: ${JSON.stringify(userText).slice(0, 80)} (turn ${turn.id})`);
       const r = await hermesRpc('prompt.submit', { session_id: sid, text: userText }, 60000);
+      hlog(`prompt.submit result: ${JSON.stringify(r?.result || r?.error || 'none').slice(0, 200)}`);
       if (r?.error) throw new Error(r.error.message || 'prompt.submit failed');
-      // Wait for message.complete or an 30s safety timeout, then close.
       await Promise.race([completePromise, new Promise(r => setTimeout(r, 30000))]);
+      hlog(`turn ${turn.id} complete, chars=${turn.chars}`);
       endStream();
     } catch (e) {
+      hlog(`turn ${turn.id} error: ${e.message}`);
       console.warn('[hermes]', e.message);
       endStream();
     }
   })();
 
-  // Client barge-in / disconnect -> interrupt the live turn.
+  // Client barge-in / disconnect -> interrupt the live turn, drain it, then allow
+  // the next prompt.submit to actually run (avoids a fresh turn being orphaned while
+  // Hermes is still draining the interrupted one).
   res.on('close', () => {
     if (done) return;
     close();
     if (hermesReady && hermesWs?.readyState === 1) {
-      try { hermesWs.send(JSON.stringify({ jsonrpc: '2.0', id: hermesSeq++, method: 'session.interrupt', params: {} })); } catch {}
+      try {
+        hermesWs.send(JSON.stringify({ jsonrpc: '2.0', id: hermesSeq++, method: 'session.interrupt', params: {} }));
+        hlog(`session.interrupt sent (turn ${turn.id} aborted)`);
+      } catch {}
     }
+    // Briefly drop inbound events so stale deltas/completes from this aborted turn
+    // don't leak into whatever the user says next.
+    settleUntil = Date.now() + 1200;
+    interruptAt = Date.now();
   });
 }
 
