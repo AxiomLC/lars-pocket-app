@@ -275,8 +275,12 @@ function echoVerdict(heard) {
     spokenSet.has(w) ||
     (w.length > 3 && spoken.some(s => s.length > 3 && (s.startsWith(w.slice(0, 4)) || w.startsWith(s.slice(0, 4)))));
 
-  const novel = toWords(heard).filter(w => !isOurs(w));
-  const hasInterruptWord = novel.some(w => CFG.BARGE_WORDS.has(w));
+  const heardWords = toWords(heard);
+  const novel = heardWords.filter(w => !isOurs(w));
+  // An explicit interrupt word is ALWAYS real speech — even if the assistant's own
+  // text happens to contain the same word (long/verbose replies talk about "stop",
+  // "wait", "hold", "no" in context, which would otherwise swallow the user's call).
+  const hasInterruptWord = heardWords.some(w => CFG.BARGE_WORDS.has(w));
   return { echo: !(novel.length >= CFG.BARGE_MIN_NOVEL || hasInterruptWord), novel };
 }
 
