@@ -239,10 +239,11 @@ curl http://localhost:PORT/api/config        # this app
 
 ## 9. Status tracker
 - [x] Phase 0 — scaffold repo + git + build doc (done)
-- [ ] Phase 1 — port pocket-tts voice frontend (mic on/off, re-arm) + server
-- [ ] Phase 2 — Hermes WS brain (`/api/ws` JSON-RPC: session.* + prompt.submit) — **critical path**
-- [ ] Phase 3 — HUD skins/panels + `hud_display`/`/api/summon` re-wiring
-- [ ] Phase 4 — Cerebras LLM lever (later)
+- [x] Phase 1 — port pocket-tts voice frontend (mic on/off, re-arm) + server (done, GH b16dc5e)
+- [x] Phase 2 — Hermes WS brain (`/api/ws` JSON-RPC: `session.create` + `prompt.submit`) — **VERIFIED LIVE** (auto-discovers token, streams real Lars reply via SSE)
+- [x] Two-leg chat — Hermes (default) + Cerebras placeholder scaffold both emit OpenAI-SSE (verified)
+- [ ] Phase 3 — HUD skins/panels + `hud_display`/`/api/summon` re-wiring (new UI on top)
+- [ ] Phase 4 — Cerebras LLM live key + latency A/B
 - [ ] Phase 5 — deprecate LiveKit path
 
 ---
@@ -267,15 +268,40 @@ gateway. These are the facts a build session needs; keep them in one place.
 ### RPC method surface (from `tui_gateway/server.py` `@method(...)`)
 Session + prompt (the Phase 2 core): `session.create`, `session.resume`, `session.list`, `session.most_recent`, `session.interrupt`, `session.compress`, `session.control`, `session.title`, `prompt.submit`, `prompt.background`, `prompt.btw`, `command.dispatch`, `slash.exec`. Voice helpers exist too: `voice.tts`, `voice.record`, `voice.toggle`.
 
-### Wire protocol
+### Wire protocol (VERIFIED live 2026-10 against running :9119)
 - Connect → server sends `{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready",...}}`.
 - Client sends `{"jsonrpc":"2.0","id":N,"method":"<method>","params":{...}}`; server replies with a same-`id` `result`/`error`.
-- Streaming chat deltas: `{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta",...}}` (`_STREAMING_EVENT_TYPES = {message.delta, reasoning.delta, thinking.delta}`).
+- **Streaming text deltas**: `message.delta` events; the chunk text is at **`params.payload.text`**
+  (nested under `payload`), NOT `params.text`. Example verified:
+  `{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"...","payload":{"text":"<chunk>"},"seq":N}}`.
+- Turn ends with `message.complete`; `thinking.delta`/`reasoning.delta` carry the model's reasoning
+  (same `params.payload.text` shape) and can be ignored for the spoken answer.
+- **Result of `prompt.submit`**: `{"result":{"status":"streaming","user_row_id":N}}` (fire-and-forget;
+  the reply streams via `message.delta`, not the RPC result).
 - Heartbeat: `{"jsonrpc":"2.0","id":N,"method":"gateway.ping"}` → `{"result":{"ok":true}}`.
 
-### Auth (gate mode decides)
+### Session gotchas (VERIFIED — do not ignore)
+- **Use `session.create`, NOT `session.most_recent`.** `most_recent` returned a stale
+  `source:"api_server"` row that `prompt.submit` rejects with **error 4001 "session not found"**.
+- **`session.create` accepts `profile`** — pass `profile:<profile>` so the session runs under the
+  named profile (else it lands on `default`). Keep the returned `session_id` and reuse it across
+  turns so the app owns one continuous conversation.
+- **`session.create` does NOT accept `surface`** (rejected: error 4000 "Extra inputs are not
+  permitted"). Leave `surface` off.
+- `prompt.submit` also rejected `surface` — keep only `{session_id, text}`.
+
+### Token auto-discovery (VERIFIED — the standard, no keys needed)
+- A local app does **not** need to pre-configure a token: `GET http://<host>:9119/` returns HTML
+  containing `window.__HERMES_SESSION_TOKEN__="<token>"`. Read that value and use it as
+  `?token=`. It is **random per server start** when `HERMES_DASHBOARD_SESSION_TOKEN` is unset, so
+  re-discover on every app start (and re-discover after any Hermes restart).
+- Verified: no token on `/api/ws` is **rejected** (socket never reaches `gateway.ready`); with the
+  page-discovered token it connects fine.
+
+### Auth (gate mode decides) — token is auto-discoverable (see above)
 - `_ws_auth_mode()`: `loopback` (default localhost) | `gated` (`auth_required`) | `insecure` (non-loopback bind).
-- **loopback**: pass `?token=<_SESSION_TOKEN>`; pin it by launching `hermes serve` with `HERMES_DASHBOARD_SESSION_TOKEN` set.
+- **loopback**: pass `?token=<_SESSION_TOKEN>`. **Our app auto-reads it from `:9119` HTML** — no
+  manual pin needed, and it tolerates Hermes generating a fresh random token each start.
 - **gated**: `POST /api/auth/ws-ticket` → single-use 30 s ticket → `?ticket=`; re-mint on reconnect.
 - Reject close codes: `4401` bad auth, `4403` host/origin mismatch, `4404` embedded chat disabled (on by default), `4408` peer not allowed.
 
@@ -329,11 +355,11 @@ ENV=dev
 # --- brain switch ---
 BRAIN=hermes                # hermes | cerebras
 
-# --- Hermes leg (loopback gateway on its natural port) ---
-HERMES_WS_URL=ws://127.0.0.1:9119/api/ws
-HERMES_TOKEN=lars-pocket-dev-token   # must equal HERMES_DASHBOARD_SESSION_TOKEN the gateway was started with
+# --- Hermes leg (default). The app AUTO-DISCOVERS the gateway, port + token from
+#     http://127.0.0.1:9119 page (see §10) — LEFT BLANK = auto (recommended). ---
 HERMES_PROFILE=lars
-# gated mode instead: HERMES_TICKET_URL=http://127.0.0.1:9119/api/auth/ws-ticket
+# Optional overrides if you run the gateway on a non-default host/port:
+# HERMES_WS_ORIGIN=http://127.0.0.1:9119    (default)
 
 # --- Cerebras leg (only used when BRAIN=cerebras) ---
 CEREBRAS_API_KEY=
@@ -356,8 +382,43 @@ All optional except `PORT`. The Hermes leg is the default; Cerebras needs only
 
 ---
 
-## 12. Execution handoff (for a fresh build session)
+## 12. Execution handoff (CURRENT STATE — build is mostly through Phase 2)
 
-If this chat is compacted, start the build from this repo's README. The one-line plan:
+Repo: `AxiomLC/lars-pocket-app` (local `C:\lars-pocket-app`). `lars-pocket-tts` is READ-ONLY (never touch).
 
-> Build in `AxiomLC/lars-pocket-app` (local `C:\lars-pocket-app`). **Option B**: bring the pocket-tts voice chassis in as-is (Phase 1) → swap Groq for the Hermes `/api/ws` JSON-RPC brain (`session.*` + `prompt.submit`, on the gateway's own `:9119` — not `/api/console`, not `:8643`, not `:8642`; see §10 facts) and prove a live Lars streaming voice round-trip → only then dump the whole lars15 HUD + `hud_display` plugin + Kanban/Dashboard/Chat boxes on top (Phase 3). `lars-pocket-tts` is READ-ONLY (working beta, `37b80de`) — never touch. Later: Cerebras sidecar toggle (§11) + cleanup LiveKit (§Phase 5).
+### Where we are
+- **Phase 1 (done):** pocket-tts voice chassis ported (mic on/off, re-arm, barge-in, typing box,
+  Pocket TTS, server) — GH `b16dc5e`.
+- **Phase 2 (done + VERIFIED):** `server.js` has TWO chat legs behind one `POST /api/chat`, both
+  emitting OpenAI-SSE the frontend already parses:
+  - **Hermes leg** (default `BRAIN=hermes`): auto-discovers the token from `:9119` HTML, connects to
+    `/api/ws`, `session.create` (profile=`lars`), `prompt.submit`, streams `message.delta`
+    (`params.payload.text`) → SSE. **Verified: typed text → Lars reply streams back.**
+  - **Cerebras leg** (`BRAIN=cerebras`): scaffold/placeholder — returns a clean SSE message telling
+    the user to set `CEREBRAS_API_KEY` (no key configured yet).
+- **Not yet working:** full **voice round-trip** is blocked on **Pocket TTS being up** (`:1133`). The
+  browser does STT; Lars writes the reply; but spoken output needs Pocket TTS running (first-run
+  model download had failed earlier — coordinate separately). STT is in-browser (Web Speech API),
+  TTS is Pocket (`:1133`), the brain is Hermes — all three independent of each other.
+
+### To run & verify (local)
+1. Start `hermes dashboard` on `:9119` (or `hermes serve`).
+2. Optionally start Pocket TTS: `uvx pocket-tts serve --port 1133` (else `/api/tts` errors but chat still works).
+3. `npm start` → `http://localhost:1122`.
+4. **Test now**: type in the box → Lars replies as streaming text. (
+Voice round-trip needs Pocket TTS running for audible output.)
+
+### Next (Phase 3 — do this AFTER Phase 2 is fully accepted)
+Dump the whole lars15 HUD + `hud_display` plugin + Kanban/Dashboard/Chat boxes on top of this
+working chassis; render the left/right diagnostic panels (Models Loadout, Voice Link, Turn Metrics,
+Diagnostics) as static placeholders (no data feeds); add mic re-arm; wire `hud_display` /api/summon.
+
+### Later
+- **Phase 4:** Cerebras live key + A/B latency (same SSE shape, drop-in — see §11).
+- **Phase 5:** deprecate/remove the old LiveKit path entirely.
+
+### Verified load-bearing facts (from §10 — do not re-derive)
+- Chat path is `/api/ws` JSON-RPC, not `/api/console` (a command console) and not `:8642`.
+- Token is auto-discoverable from the `:9119` page (random per start; re-read on every start).
+- `session.create` (profile=`lars`), NOT `session.most_recent` (stale api_server row → 4001).
+- `message.delta` text is at `params.payload.text`. No `surface` params on create/submit.
