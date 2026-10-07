@@ -242,9 +242,14 @@ curl http://localhost:PORT/api/config        # this app
 - [x] Phase 1 — port pocket-tts voice frontend (mic on/off, re-arm) + server (done, GH b16dc5e)
 - [x] Phase 2 — Hermes WS brain (`/api/ws` JSON-RPC: `session.create` + `prompt.submit`) — **VERIFIED LIVE** (auto-discovers token, streams real Lars reply via SSE)
 - [x] Two-leg chat — Hermes (default) + Cerebras placeholder scaffold both emit OpenAI-SSE (verified)
-- [ ] Phase 3 — HUD skins/panels + `hud_display`/`/api/summon` re-wiring (new UI on top)
-- [ ] Phase 4 — Cerebras LLM live key + latency A/B
-- [ ] Phase 5 — deprecate LiveKit path
+- [x] Voice round-trip audibly working — fixed Pocket TTS `voice_url` 400 (`af_heart` bare name → built-in `alba`)
+- [x] Barge-in reliable over long replies — turn-scoped Hermes streaming + drain gate (GH 9a5c95c)
+- [x] Self-pruning UI-log mirror (`logs/ui.log`) + Hermes server log (`logs/server.log`)
+- [x] `start.bat` launcher (STT/TTS/UI only; never touches Hermes)
+- [ ] Phase 3 — build the new visual UI on top + render HUD panels as placeholders
+- [ ] Phase 4 — Cerebras direct-LLM live key + latency A/B (drop-in via BRAIN=cerebras)
+- [ ] :9119 tool hook — UI tools open Hermes displays via the gateway
+- [ ] Final README.md (after the UI build; buildREADME remains the spec until then)
 
 ---
 
@@ -387,35 +392,37 @@ All optional except `PORT`. The Hermes leg is the default; Cerebras needs only
 Repo: `AxiomLC/lars-pocket-app` (local `C:\lars-pocket-app`). `lars-pocket-tts` is READ-ONLY (never touch).
 
 ### Where we are
-- **Phase 1 (done):** pocket-tts voice chassis ported (mic on/off, re-arm, barge-in, typing box,
-  Pocket TTS, server) — GH `b16dc5e`.
-- **Phase 2 (done + VERIFIED):** `server.js` has TWO chat legs behind one `POST /api/chat`, both
-  emitting OpenAI-SSE the frontend already parses:
-  - **Hermes leg** (default `BRAIN=hermes`): auto-discovers the token from `:9119` HTML, connects to
-    `/api/ws`, `session.create` (profile=`lars`), `prompt.submit`, streams `message.delta`
-    (`params.payload.text`) → SSE. **Verified: typed text → Lars reply streams back.**
-  - **Cerebras leg** (`BRAIN=cerebras`): scaffold/placeholder — returns a clean SSE message telling
-    the user to set `CEREBRAS_API_KEY` (no key configured yet).
-- **Not yet working:** full **voice round-trip** is blocked on **Pocket TTS being up** (`:1133`). The
-  browser does STT; Lars writes the reply; but spoken output needs Pocket TTS running (first-run
-  model download had failed earlier — coordinate separately). STT is in-browser (Web Speech API),
-  TTS is Pocket (`:1133`), the brain is Hermes — all three independent of each other.
+- **Voice round-trip now WORKS (verified 2026-10):** Speak → Lars streams a reply → audible via
+  Pocket (`alba`). Fixed Pocket TTS 400 `voice_url` bug: the app was sending the bare Kokoro name
+  `af_heart` as Pocket's `voice_url` (must be an `http(s)://` or `hf://` URL). We now only send
+  `voice_url` when it's a real URL; otherwise Pocket uses its built-in voice (`alba`).
+- **Barge-in works**, including over long replies (the earlier "doesn't stop" was because TTS 400'd
+  so no audio was ever playing). Interrupt logic is byte-identical to the working pocket-tts app.
+- **Hermes leg hardened for barge-in (commit `9a5c95c`):** streaming is turn-scoped — each
+  `/api/chat` call has its own turn, stale `message.delta`/`message.complete` from an interrupted
+  turn no longer resolve/truncate the next turn. Previously a barge-in caused the next turn to
+  time out at 30s with ~1 char and end in "empty reply from LLM". A bounded drain gate (wait for
+  the aborted reply to go quiet before the next submit) stops the interrupted reply's tail from
+  bleeding into the next answer. Normal (non-barge-in) turns are unaffected.
+- **Self-pruning UI log mirror:** the in-browser log panel also writes to `logs/ui.log` (newest 200
+  lines) via `POST /api/log`; plus `logs/server.log` for Hermes turn/event debug. Both are gitignored.
+- **`start.bat` (new):** starts ONLY this app's own pieces and NEVER touches Hermes — checks Pocket
+  TTS on `:1133` (starts it if down), runs `npm start` for the UI, opens the browser. Assumes
+  Hermes `serve`/`:9119` is already up. STT is in-browser (Web Speech) — no server.
 
 ### To run & verify (local)
-1. Start `hermes dashboard` on `:9119` (or `hermes serve`).
-2. Optionally start Pocket TTS: `uvx pocket-tts serve --port 1133` (else `/api/tts` errors but chat still works).
-3. `npm start` → `http://localhost:1122`.
-4. **Test now**: type in the box → Lars replies as streaming text. (
-Voice round-trip needs Pocket TTS running for audible output.)
+1. Ensure Hermes is running and `:9119` is live (the app auto-discovers token + connects).
+2. Double-click `start.bat` (or run pieces manually) → Pocket TTS on `:1133` + app on `:1122` + browser opens.
+3. **Test**: press Talk and speak, or type in the box → Lars streams a text reply (audible via Pocket).
 
-### Next (Phase 3 — do this AFTER Phase 2 is fully accepted)
-Dump the whole lars15 HUD + `hud_display` plugin + Kanban/Dashboard/Chat boxes on top of this
-working chassis; render the left/right diagnostic panels (Models Loadout, Voice Link, Turn Metrics,
-Diagnostics) as static placeholders (no data feeds); add mic re-arm; wire `hud_display` /api/summon.
-
-### Later
-- **Phase 4:** Cerebras live key + A/B latency (same SSE shape, drop-in — see §11).
-- **Phase 5:** deprecate/remove the old LiveKit path entirely.
+### Next (after current voice build is fully accepted)
+1. **Cerebras direct-LLM leg (Phase 4):** set `BRAIN=cerebras` + `CEREBRAS_API_KEY` and A/B the same
+   SSE path for faster streaming; drop-in, no UI change.
+2. **New UI on top (Phase 3):** build a fresh visual skin for this app; render the lars15 HUD panels
+   (Models Loadout, Voice Link, Turn Metrics, Diagnostics) as static placeholders; keep mic + re-arm + typing.
+3. **:9119 tool hook:** tools in the UI open various Hermes displays by talking to the `:9119` gateway.
+4. **start.bat will grow** to also launch/point at the Cerebras config and the new UI's :9119 tools —
+   keep it additive; it must still NEVER touch/start Hermes itself.
 
 ### Verified load-bearing facts (from §10 — do not re-derive)
 - Chat path is `/api/ws` JSON-RPC, not `/api/console` (a command console) and not `:8642`.
