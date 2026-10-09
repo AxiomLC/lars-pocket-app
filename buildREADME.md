@@ -131,7 +131,7 @@ engine from. Verified as of the beta `6fe468c`:
 | **VIEWS dock** | The fixed quick-jump buttons (KANBAN / DASHBOARD / CHAT) in the left column | `openView()` / `#viewer` |
 | **summon channel** | The outgoing SSE pipe (`/events`) the server uses to *push* a Holo Panel to open HUDs | `server.js` SSE `/events` + `POST /api/summon` |
 | **`/api/summon`** | Endpoint Lars (via tool) hits to trigger a Holo Panel | `server.js` |
-| **`hud` toolset / `hud_display`** | Hermes-side tools Lars calls to summon/dismiss | `hermes-plugin/hud_display/` (to bring in) |
+| **`hud` toolset / `hud_display`** | Hermes-side tools Lars calls to summon/dismiss | `hermes-plugin/hud_display/` (deployed to `lars` profile home) |
 | **VIEWS content** | Kanban / dashboard / chat iframed from `:9119` | iframes |
 
 ---
@@ -158,13 +158,9 @@ Source: `C:\Users\Admin\lars13\server\hud\index.html` (single 885-line static fi
 4. **`hud_display` plugin — brought into repo:** copied to `hermes-plugin/hud_display/` and adapted:
    `tools.py` now uses `LARS_SUMMON_URL` (default `http://127.0.0.1:1122/api/summon`) + `X-Lars-Token`;
    `schemas.py` points Lars at `http://127.0.0.1:9119/kanban` & `/`.
-   **To activate (deploy step, touches the Hermes install — done by Lars, not the app):**
-   (a) copy the plugin dir to `C:\Users\Admin\AppData\Local\hermes\plugins\hud_display\`;
-   (b) add `hud_display` to `plugins.enabled` in that home's `config.yaml` (plugins are **opt-in** —
-   `gate_manifest` skips anything not in `plugins.enabled`);
-   (c) restart `hermes serve` so `discover_plugins()` registers the `hud` toolset;
-   (d) run `hermes tools enable hud --platform cli` (no platform restriction → allowed on `cli`)
-   so the `lars` profile exposes the `hud_display`/`hud_dismiss` tools.
+   **DEPLOYED** into the **`lars` profile scope** (`profiles\lars\plugins\hud_display\`) and enabled in
+   `profiles\lars\config.yaml` → `plugins.enabled`, **not** the global scope — see §6A. No
+   `hermes tools enable hud` is needed (plugin toolsets auto-enable; `hud` is not default-off).
 
 ### Sub-phase 3B — voice grafted onto the HUD ✅ DONE
 5. **Done:** the working voice state machine (armed mic on/off, **re-arm button**, barge-in,
@@ -192,6 +188,53 @@ Source: `C:\Users\Admin\lars13\server\hud\index.html` (single 885-line static fi
 ### Build order note (why 3A before 3B)
 Land the risky new plumbing (Holt Panel summon + VIEWS iframes) on the HUD shell first, then move
 the already-working voice in. Keeps each step runnable and rollback-safe.
+
+---
+
+## 6A. Hermes `lars` profile setup — REQUIRED for Lars to summon Holo Panels
+
+> ⚠️ **Lars runs from its OWN profile home, NOT the global Hermes home.** On this machine that is
+> `C:\Users\Admin\AppData\Local\hermes\profiles\lars\` — it has its own `config.yaml`, `SOUL.md`
+> and `plugins/`. **Profile settings override global Hermes settings.** Any change meant to reach
+> Lars must land in the **profile** scope, not `...\hermes\` (the global scope is ignored by Lars's
+> session). Do not re-derive this — it was confirmed empirically and against the Hermes source
+> (`plugins_discovery.collect_directory_manifests` scans `get_hermes_home()/plugins`, which under a
+> multiplexed profile resolves to the profile home).
+
+For someone configuring a fresh machine from this repo, to give their `lars` profile the Holo-Panel
+`hud` toolset:
+
+1. **Copy the plugin into the lars profile home** (NOT the global `...\hermes\plugins\`):
+   ```cmd
+   xcopy /E /I "C:\lars-pocket-app\hermes-plugin\hud_display" "C:\Users\Admin\AppData\Local\hermes\profiles\lars\plugins\hud_display"
+   ```
+2. **Enable it in the lars profile's `config.yaml`** — add to `plugins.enabled` (plugins are **opt-in**;
+   `gate_manifest` skips anything not listed):
+   ```yaml
+   plugins:
+     enabled:
+       # - lars
+       - strike-freedom-cockpit
+       - hud_display
+   ```
+3. **Restart `hermes serve`** so `discover_plugins()` runs at startup and `register(ctx)` populates
+   the `hud` toolset (`hud_display`, `hud_dismiss`).
+4. **The `hud` toolset auto-enables** — plugin toolsets are NOT default-off (`_DEFAULT_OFF_TOOLSETS`
+   only lists `homeassistant, spotify, discord, discord_admin, video, video_gen, x_search, a2a, kanban`),
+   so **no `hermes tools enable hud` is needed** and no `platform_toolsets.cli` edit. It stays available
+   to Lars even though his `agent.disabled_toolsets` disables `skills`/`file`/`terminal`/etc. for speed.
+
+**Where the app's `/api/summon` gets its calls from:**
+- `hermes-plugin/hud_display/tools.py` POSTs to `LARS_SUMMON_URL` (default `http://127.0.0.1:1122/api/summon`,
+  override via env `LARS_SUMMON_URL`), with `X-Lars-Token` (env `LARS_HUD_TOKEN`).
+- `server.js` `POST /api/summon` broadcasts `summon_panel` / `dismiss_panels` over the `/events` SSE
+  feed to every open HUD tab at `/hud/`.
+- `public/hud/index.html` renders the Holo Panel (`summonPanel()` handles `media=iframe|video|image`).
+
+**Soul:** the `lars` profile persona lives at `...\profiles\lars\SOUL.md` (not the global `SOUL.md`).
+It tells Lars to use `hud_display` (media: iframe for pages/dashboard, video for YouTube, image) and
+`hud_dismiss`, keep replies short (streaming voice), and emit interim lines for >4s work. No runtime
+Skill is needed — the `hud` **plugin toolset** is the mechanism (see §10 gotcha #3).
 
 ---
 
@@ -229,7 +272,7 @@ curl http://127.0.0.1:9119/           # hermes gateway (token auto-discover)
 
 **UI build (Phase 3):**
 - [x] 3A — HUD shell served at `/hud/`; VIEWS iframes point at `:9119` (no frame-block — verified); SSE summon channel (`/events` + `/api/summon`) + `hud_display` plugin brought in & adapted
-- [ ] 3A deploy note — Lars installs `hud_display` plugin into Hermes home, enables it in `plugins.enabled`, restarts serve, `hermes tools enable hud --platform cli`
+- [x] 3A deploy — `hud_display` plugin **deployed into the `lars` profile scope** (`profiles\lars\plugins\hud_display\`) + enabled in `profiles\lars\config.yaml` `plugins.enabled`; `hud` toolset auto-enables (no `hermes tools enable` needed). Profile-setup steps documented in §6A.
 - [x] 3B — **voice grafted onto the HUD** (`/hud/` loads `state.js` + `app.js` verbatim): armed mic, re-arm button (chat row, next to SEND/CLR), barge-in, Pocket playback all work; orb/ring + Space = mic; idle ring label = **L.A.R.S**
 - [ ] 3B test — confirm voice round-trip + barge-in live in `/hud/`
 - [ ] 3C — side panels: `:9119` RPC stats + local psutil + token tally (placeholders first)
@@ -248,3 +291,9 @@ curl http://127.0.0.1:9119/           # hermes gateway (token auto-discover)
 - `message.delta` text at `params.payload.text`; ends with `message.complete`.
 - `lars-pocket-tts` and `lars15` are **READ-ONLY**; `lars13` (jarvis_ai) is copy-source only.
 - `voice_url` on Pocket must be an `http(s)://` / `hf://` URL; bare names are ignored → built-in `alba`.
+- **Plugin toolset `hud` auto-enables** — plugin toolsets are not in `_DEFAULT_OFF_TOOLSETS`, so once the
+  `hud_display` plugin is enabled + Hermes restarted, Lars gets `hud_display`/`hud_dismiss` regardless of
+  his `agent.disabled_toolsets` (which only disables `skills`/`file`/`terminal`/`code_execution`/etc. for
+  streaming speed). No `hermes tools enable hud` required.
+- **The `lars` profile is its own Hermes home** — `profiles\lars\` (config.yaml, SOUL.md, plugins/). Profile
+  settings override global Hermes. Deploy plugin/config changes there, not the global scope.
