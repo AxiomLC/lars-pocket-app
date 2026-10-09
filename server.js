@@ -67,6 +67,33 @@ function appendUiLog(line) {
 }
 
 /* =====================================================================
+   SUMMON CHANNEL — Server-Sent Events feed to every open HUD.
+   The Hermes `hud_display` tool POSTs to /api/summon; we broadcast a
+   `summon_panel` / `dismiss_panels` SSE event to all connected HUDs,
+   which render a Holo Panel. Zero dependencies (plain node http).
+   ===================================================================== */
+const hudClients = new Set();
+function sseWrite(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
+}
+function broadcastSummon(payload) {
+  const buf = [];
+  hudClients.forEach((res, i) => {
+    buf.push(i);
+    try { sseWrite(res, 'summon_panel', payload); } catch { hudClients.delete(res); }
+  });
+  console.log(`[hud] summon broadcast to ${buf.length} HUD screen(s)`);
+}
+function broadcastDismiss() {
+  let n = 0;
+  hudClients.forEach(res => {
+    try { sseWrite(res, 'dismiss_panels', {}); n++; } catch { hudClients.delete(res); }
+  });
+  console.log(`[hud] dismiss broadcast to ${n} HUD screen(s)`);
+}
+
+/* =====================================================================
    HERMES LEG — /api/ws JSON-RPC -> OpenAI-SSE
    Auto-discovers the session token from the dashboard page, keeps one
    persistent WS, and uses the live Lars session. The frontend posts the
@@ -309,6 +336,32 @@ http.createServer(async (req, res) => {
       });
     }
 
+    // --- HUD summon channel: 1) an open HUD subscribes to the SSE stream, ---
+    // --- 2) the Hermes hud tool posts here and we fan the event out.       ---
+    if (req.method === 'GET' && req.url === '/events') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive', 'X-Accel-Buffering': 'no',
+      });
+      res.write('retry: 3000\n\n');
+      hudClients.add(res);
+      req.on('close', () => hudClients.delete(res));
+      return; // stream stays open — never call res.end() here
+    }
+
+    if (req.method === 'POST' && req.url === '/api/summon') {
+      let body = {};
+      try { body = JSON.parse(await readBody(req)) || {}; } catch {}
+      if (body.action === 'dismiss') broadcastDismiss();
+      else broadcastSummon({
+        media: body.media || 'iframe',
+        src: body.src || '',
+        title: (body.title || 'INCOMING FEED'),
+        position: ['left', 'right', 'center'].includes(body.position) ? body.position : 'center',
+      });
+      return sendJson(res, 200, { ok: true, sent_to: hudClients.size });
+    }
+
     if (req.method === 'POST' && req.url === '/api/chat') {
       const { messages } = JSON.parse(await readBody(req));
       if (!Array.isArray(messages)) return sendJson(res, 400, { error: 'messages array required' });
@@ -331,7 +384,9 @@ http.createServer(async (req, res) => {
       return pipeReadableTo(res, upstream, { 'Content-Type': 'audio/wav' });
     }
 
-    const f = path.join(__dir, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);
+    let f = path.join(__dir, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);
+    // If the URL resolves to a directory (e.g. `/hud/`), serve its index.html.
+    if (fs.existsSync(f) && fs.statSync(f).isDirectory()) f = path.join(f, 'index.html');
     if (!f.startsWith(path.join(__dir, 'public')) || !fs.existsSync(f)) { res.writeHead(404); return res.end('not found'); }
     const mime = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript' }[path.extname(f)] || 'text/plain';
     res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });

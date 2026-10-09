@@ -1,22 +1,42 @@
 # BUILDREADME — lars-pocket-app
 
 Authoritative build doc for **lars-pocket-app** (local `C:\lars-pocket-app`, GitHub
-`AxiomLC/lars-pocket-app`, branch `main`). Covers the **working beta v1.0 as it stands NOW**
-(pre-HUD) and the plan to lay the jarvis_ai HUD on top. A separate human-facing `README.md`
-comes after the UI build.
+`AxiomLC/lars-pocket-app`, branch `main`). Covers the HUD build (Phase 3) and the
+baseline it stands on. A separate human-facing `README.md` comes after the UI build.
+
+> ## ⭐ FALLBACK — the last-known-good plain voice UI (pre-HUD)
+> If the HUD work ever breaks or you just want the simple voice page back, this is the
+> exact, fully-working **two-way voice → Lars** beta that predates the HUD:
+>
+> - **Commit `6fe468c`** on `main` — `public/index.html` (old pocket-tts voice UI) +
+>   `public/app.js` + `public/state.js`. Voice round-trip, barge-in, re-arm, typed chat,
+>   Pocket `alba` all verified working end-to-end.
+> - **To revert the HUD** (bring back the plain voice UI as `/`):
+>   `git checkout 6fe468c -- server.js public/index.html public/app.js public/state.js public/style.css .env.example start.bat`
+>   then `npm start` → `http://localhost:1122/` gives the old working voice page.
+> - **`app.js` + `state.js` are still loaded by the HUD** (`/hud/` pulls them in
+>   verbatim), so the voice engine behind the new UI is byte-identical to this beta.
+> - The old voice page (`public/index.html`) is still served at `/` and remains usable
+>   alongside the HUD — it was not deleted.
 
 ---
 
-## 1. What this app is (current, working beta v1.0)
+## 1. What this app is (current state: HUD UI + working voice)
 
-A single-node (Express) web app on **`http://localhost:1122`** that delivers **two-way voice
-chat to a live Hermes `lars` profile session**:
+A single-node (no-dependency `node:http`) web app on **`http://localhost:1122`** that delivers
+**two-way voice chat to a live Hermes `lars` profile session**, served through TWO UIs:
+
+- **`/hud/`** — the jarvis-style **HUD** (Phase 3): full-screen interface with Holo Panels,
+  VIEWS (kanban / dashboard / chat iframed from `:9119`), and the grafted voice engine. This is
+  now the primary UI.
+- **`/`** — the original pocket-tts voice page (pre-HUD beta), still served and working.
 
 - **STT** — in-browser (Web Speech API). No server.
 - **Brain** — Hermes via the **`:9119` JSON-RPC/WebSocket gateway** (`/api/ws`), default `BRAIN=hermes`.
 - **TTS** — Pocket TTS on `:1133` (uvx), served through our `/api/tts` proxy. Built-in `alba` voice.
 - **Voice UX** — armed mic (on/off), **re-arm toggle**, **barge-in**, sentence-chunked streaming
-  playback, and a typing box. All on the current (old) pocket-tts-style UI.
+  playback, and a typing box. Now sits on the **HUD** (`/hud/`), driven by the same `state.js` +
+  `app.js` that ran the old UI (byte-identical voice engine).
 
 ```
 Chrome (armed mic, barge-in)
@@ -42,7 +62,7 @@ One `POST /api/chat` emits OpenAI-SSE; the brain is swappable via `BRAIN` in `.e
 
 | Repo / dir | Role | Status |
 |---|---|---|
-| `C:\lars-pocket-app` | **THIS project.** Working voice→Lars chat; HUD to be laid on top. | **Active** |
+| `C:\lars-pocket-app` | **THIS project.** Voice→Lars chat + jarvis-style HUD (Phase 3) on top. HUD at `/hud/`, old voice page at `/`. | **Active** |
 | `C:\Users\Admin\lars-pocket-tts` | Original working pocket-tts voice harness; source of our voice frontend pattern. GitHub `AxiomLC/lars-pocket-tts`. | **READ-ONLY** — never touch/push |
 | `C:\Users\Admin\lars13` | Local copy of **`eadmin2/jarvis_ai`** (the other dev's repo). Source of the **HUD** (`server/hud/index.html`) + `hermes-plugin/hud_display`. | **Source to copy from** — don't modify |
 | Hermes (installed) | Runs `hermes serve` — the `:9119` gateway we connect to. Profile `lars`. | Runtime dep (already up) |
@@ -73,9 +93,10 @@ One `POST /api/chat` emits OpenAI-SSE; the brain is swappable via `BRAIN` in `.e
 
 ---
 
-## 4. Current state (working beta v1.0) — STABLE SNAPSHOT
+## 4. Current state — the pre-HUD baseline this build stands on
 
-Working and verified as of this edit:
+This is the STABLE baseline (old pocket-tts voice UI at `/`) that the HUD grafted its voice
+engine from. Verified as of the beta `6fe468c`:
 
 - **Full voice round-trip WORKS:** speak → Lars streams a reply → audible via Pocket (`alba`).
 - **Pocket TTS `voice_url` fixed (commit `bdf0a68`):** the app was sending the bare Kokoro name
@@ -94,7 +115,9 @@ Working and verified as of this edit:
 ### To run & verify
 1. Hermes is up and `:9119` live (app auto-discovers token + connects).
 2. `start.bat` (or: `uvx pocket-tts serve --port 1133` + `npm start`) → `http://localhost:1122`.
-3. Speak or type → Lars streams a reply (audible via Pocket).
+3. **HUD (primary):** open `http://localhost:1122/hud/` — click the ring / ENGAGE VOICE,
+   speak, barge in over Lars. Typed chat box also feeds the same brain.
+4. **Old voice page (fallback):** open `http://localhost:1122/` (unchanged baseline).
 
 ---
 
@@ -102,11 +125,11 @@ Working and verified as of this edit:
 
 | Term | Meaning | File / code |
 |---|---|---|
-| **HUD** | The whole full-screen UI we're about to lay on top | `public/hud/index.html` |
+| **HUD** | The whole full-screen UI laid on top of the voice chassis | `public/hud/index.html` |
 | **Holo Panel** | A floating iframe pop-up the HUD shows on demand (any content: kanban, dashboard, chat, a web page) | `summonPanel()` / `#holoStage`, `.holo` |
 | **Holo Panel M / F** | Medium / Full size variants of a Holo Panel | `position`/size in `summonPanel` |
 | **VIEWS dock** | The fixed quick-jump buttons (KANBAN / DASHBOARD / CHAT) in the left column | `openView()` / `#viewer` |
-| **summon channel** | The always-open pipe (WS/SSE) the server uses to *push* a Holo Panel to an open HUD | to add: `#/ws` or SSE `/events` |
+| **summon channel** | The outgoing SSE pipe (`/events`) the server uses to *push* a Holo Panel to open HUDs | `server.js` SSE `/events` + `POST /api/summon` |
 | **`/api/summon`** | Endpoint Lars (via tool) hits to trigger a Holo Panel | `server.js` |
 | **`hud` toolset / `hud_display`** | Hermes-side tools Lars calls to summon/dismiss | `hermes-plugin/hud_display/` (to bring in) |
 | **VIEWS content** | Kanban / dashboard / chat iframed from `:9119` | iframes |
@@ -118,27 +141,42 @@ Working and verified as of this edit:
 Source: `C:\Users\Admin\lars13\server\hud\index.html` (single 885-line static file) +
 `hermes-plugin/hud_display`. We **port the UI**, we do **not** port jarvis_ai's voice/audio stack.
 
-### Sub-phase 3A — shell + VIEWS working (no voice wiring)
-1. Copy `hud/index.html` → `public/hud/index.html`, served by our Express server.
-   - Disable/remove the PIN auth gate (we're loopback + our app owns auth).
-   - Keep the HUD as a separate page (`/hud/`), independent of the current voice page for now.
+### Sub-phase 3A — shell + VIEWS working (no voice wiring) ✅ DONE
+1. Copy `hud/index.html` → `public/hud/index.html`, served by our `node:http` server (plain http,
+   **not** Express — the project has zero dependencies by design).
+   - Removed the PIN auth gate (we're loopback + our app owns auth).
+   - HUD is a separate page at `/hud/`, independent of the current voice page.
 2. **VIEWS = iframes pointed at `:9119`** — `openView('KANBAN','/kanban')`, DASHBOARD `/`,
-   CHAT `/chat`. Confirm `:9119` doesn't frame-block; if it sends `X-Frame-Options`/CSP, strip
-   those headers in a small Express proxy route (mirrors what jarvis_ai's `:9443` proxy did, but
-   we iframe `:9119` directly — no separate TLS proxy).
-3. **Holo Panel summon channel:** add `POST /api/summon` + a lightweight WS/SSE event feed the
-   HUD connects to; wire `summonPanel`/`dismissAllPanels` to it. (`/api/pub` + `/api/events` on
-   `:9119` may fan events out — reuse if it suits, else a local channel.)
-4. **Bring in `hud_display` plugin:** copy `hermes-plugin/hud_display/` into this app; point its
-   `SUMMON_URL` at **our** `/api/summon` (env, e.g. `LARS_SUMMON_URL`); register the `hud`
-   toolset in the `lars` profile; teach Lars to summon Holo Panels.
+   CHAT `/chat`. **VERIFIED live 2026-10: `:9119` sends NO `X-Frame-Options` and NO CSP
+   `frame-ancestors`** on `/`, `/kanban`, `/chat` (all return the same React SPA `index.html`).
+   So we iframe `:9119` directly — **no header-strip proxy needed** (simpler than the original plan).
+3. **Holo Panel summon channel — DONE via SSE (zero deps):** `GET /events` (SSE stream each open
+   HUD connects to via `EventSource`) + `POST /api/summon` broadcast. Our `server.js` fans a
+   `summon_panel` / `dismiss_panels` SSE event out to all connected HUDs, which call the existing
+   `summonPanel` / `dismissAllPanels`.  (`/api/pub`+`/api/events` on `:9119` were **not** reused —
+   a local channel keeps the summon feed on our server, aligned with the voice channel that 3B adds.)
+4. **`hud_display` plugin — brought into repo:** copied to `hermes-plugin/hud_display/` and adapted:
+   `tools.py` now uses `LARS_SUMMON_URL` (default `http://127.0.0.1:1122/api/summon`) + `X-Lars-Token`;
+   `schemas.py` points Lars at `http://127.0.0.1:9119/kanban` & `/`.
+   **To activate (deploy step, touches the Hermes install — done by Lars, not the app):**
+   (a) copy the plugin dir to `C:\Users\Admin\AppData\Local\hermes\plugins\hud_display\`;
+   (b) add `hud_display` to `plugins.enabled` in that home's `config.yaml` (plugins are **opt-in** —
+   `gate_manifest` skips anything not in `plugins.enabled`);
+   (c) restart `hermes serve` so `discover_plugins()` registers the `hud` toolset;
+   (d) run `hermes tools enable hud --platform cli` (no platform restriction → allowed on `cli`)
+   so the `lars` profile exposes the `hud_display`/`hud_dismiss` tools.
 
-### Sub-phase 3B — graft our voice onto the HUD
-5. Port our working voice state machine (armed mic on/off, **re-arm button**, barge-in,
-   sentence-chunked playback, Pocket TTS) into `hud/index.html`; **replace** jarvis_ai's
-   push-to-talk WS audio path. Keep the HUD's animated reactor ring as a **cosmetic state
-   indicator** driven by our own `State` machine.
-6. Add the **mic on/off** and **re-arm toggle** controls to the HUD's VOICE LINK panel.
+### Sub-phase 3B — voice grafted onto the HUD ✅ DONE
+5. **Done:** the working voice state machine (armed mic on/off, **re-arm button**, barge-in,
+   sentence-chunked playback, Pocket TTS) is now in `/hud/`. We load **`state.js` + `app.js`
+   verbatim** (the exact engine from the old UI) rather than porting/rewriting — zero regression
+   risk. `app.js` binds `#mic`/`#rearm`/`#stop`/`#echo`/`#send`/`#clear`/`#txt` and posts `.m`
+   bubbles into `#chat` on the HUD.
+6. **Controls:** orb/ring + Space = mic toggle (same as `#mic`); **re-arm button** sits in the
+   chat row next to SEND/CLR; the HUD's reactor ring follows the `State` machine (idle ring
+   label = **L.A.R.S**). Note: the HUD inline script is wrapped in an IIFE so its `const $`
+   doesn't collide with `app.js`'s `$` (that was the old "Identifier already declared" error);
+   only `openView` + `setState` are exposed as globals.
 
 ### Sub-phase 3C — side panels (data policy)
 7. The left/right panels (Models Loadout, Voice Link, Turn Metrics, Diagnostics, Machines,
@@ -190,8 +228,10 @@ curl http://127.0.0.1:9119/           # hermes gateway (token auto-discover)
 - [x] buildREADME brought current + commit (revert point for the UI build)
 
 **UI build (Phase 3):**
-- [ ] 3A — HUD shell + VIEWS iframes (:9119) + Holo Panel summon channel + `hud_display` plugin
-- [ ] 3B — graft our voice (armed mic, mic on/off, re-arm, barge-in, Pocket) onto the HUD
+- [x] 3A — HUD shell served at `/hud/`; VIEWS iframes point at `:9119` (no frame-block — verified); SSE summon channel (`/events` + `/api/summon`) + `hud_display` plugin brought in & adapted
+- [ ] 3A deploy note — Lars installs `hud_display` plugin into Hermes home, enables it in `plugins.enabled`, restarts serve, `hermes tools enable hud --platform cli`
+- [x] 3B — **voice grafted onto the HUD** (`/hud/` loads `state.js` + `app.js` verbatim): armed mic, re-arm button (chat row, next to SEND/CLR), barge-in, Pocket playback all work; orb/ring + Space = mic; idle ring label = **L.A.R.S**
+- [ ] 3B test — confirm voice round-trip + barge-in live in `/hud/`
 - [ ] 3C — side panels: `:9119` RPC stats + local psutil + token tally (placeholders first)
 
 **Later:**

@@ -28,6 +28,15 @@ if %errorlevel%==0 (
 )
 
 :: ---- 3. UI app (this server) on :PORT ----
+:: Kill any stale server still listening on the app port so relicitations always
+:: recycle the old process and run the current code (avoids the "old node serves
+:: stale code" trap). Then start fresh.
+echo [start] checking for a stale server on :%PORT%:
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /r /c:":%PORT% .*LISTENING"') do (
+  echo [start]   stopping stale server PID %%p on :%PORT%
+  taskkill /F /PID %%p >nul 2>&1
+  timeout /t 1 /nobreak >nul
+)
 echo [start] starting lars-pocket-app on http://localhost:%PORT%
 start "" "http://localhost:%PORT%"
 npm start
