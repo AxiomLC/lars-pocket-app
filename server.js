@@ -191,10 +191,12 @@ function hermesOnEvent(type, params) {
     if (Date.now() < settleUntil) { hlog('message.complete dropped (settle)'); return; }
     const t = curTurn;
     if (!t) { hlog('message.complete dropped (no live turn)'); return; }
-    // Only end this turn if it has actually produced content, so a stale complete
-    // from the interrupted prior turn can't truncate a fresh turn to empty.
-    if (t.chars > 0) t.promise.resolve();
-    else hlog(`message.complete ignored for empty turn (chars=${t.chars})`);
+    // End this turn when it produced real spoken content OR genuinely ran and completed
+    // (its deltas may have been entirely tool-narration filtered out of speech). A stale
+    // complete for a turn that never saw a delta (fresh turn, nothing yet) still won't
+    // truncate it — see sawRaw.
+    if (t.chars > 0 || t.sawRaw > 0) t.promise.resolve();
+    else hlog(`message.complete ignored for empty turn (sawRaw=${t.sawRaw})`);
   }
 }
 
@@ -208,6 +210,24 @@ async function getOrCreateSession() {
   return larsSessionId;
 }
 
+// Strip things Lars never means to be HEARD: tool-call JSON, <HUD DISPLAY>/HTML tags,
+// thinking/reasoning markers, and lone tool names. Keeps the spoken stream clean without
+// dropping real prose. (TTS gets the result; the chat bubble may still show raw content.)
+function cleanSpokenText(raw) {
+  if (!raw) return '';
+  let t = String(raw);
+  // <HUD DISPLAY>...</HUD DISPLAY> or any <...> markup
+  t = t.replace(/<HUD[^>]*>[\s\S]*?<\/HUD>|<[^>]+>/gi, ' ');
+  // JSON tool-call blocks / raw tool JSON literals
+  t = t.replace(/\{\s*"tool"[\s\S]*?\}/gi, ' ');
+  t = t.replace(/\{\s*"name"[\s\S]*?\}/gi, ' ');
+  // known tool-call narration + interim comms prefixes
+  t = t.replace(/\b(?:hud_display|hud_dismiss|web_search|browser_navigate)\b[\s,]*/gi, ' ');
+  // markdown/URL noise
+  t = t.replace(/`+|```+/g, ' ').replace(/https?:\/\/\S+/g, ' ');
+  return t.replace(/\s+/g, ' ').trim();
+}
+
 // Turn relay: collect message.delta into an SSE stream; end on message.complete.
 function streamHermesChat(req, res, messages) {
   const userText = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
@@ -219,10 +239,14 @@ function streamHermesChat(req, res, messages) {
 
   // Per-turn promise + relay (registered as the current turn).
   const turn = {
-    id: hermesSeq++, chars: 0,
+    id: hermesSeq++, chars: 0, sawRaw: 0,
     push(text) {
-      this.chars += text.length;
-      res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: text } }] })}\n\n`);
+      this.sawRaw++;                       // any delta of THIS turn (even if filtered out of speech)
+      const clean = cleanSpokenText(text);
+      // Only forward a delta to the spoken stream if it contains real deliverable text.
+      if (!clean) return;
+      this.chars += clean.length;
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: clean } }] })}\n\n`);
     },
     promise: null,
   };
@@ -382,6 +406,29 @@ http.createServer(async (req, res) => {
       const upstream = await fetch(POCKET_URL, { method: 'POST', body: form, signal: ac.signal });
       if (!upstream.ok) return sendJson(res, 502, { error: `Pocket TTS ${upstream.status}: ${(await upstream.text()).slice(0, 200)}` });
       return pipeReadableTo(res, upstream, { 'Content-Type': 'audio/wav' });
+    }
+
+    // --- HUD embed proxy: let Holo Panels iframe external pages that would otherwise
+    // --- refuse framing via X-Frame-Options / CSP frame-ancestors. We fetch server-side
+    // --- and re-serve WITHOUT those headers (mirrors jarvis_ai's original :9443 proxy).
+    // --- GET /api/embed?url=<encoded target>&title=<optional>
+    if (req.method === 'GET' && req.url.startsWith('/api/embed?')) {
+      const u = new URL(req.url, 'http://x');
+      const target = u.searchParams.get('url') || '';
+      if (!/^https?:\/\//i.test(target)) return sendJson(res, 400, { error: 'embed requires an http(s) url' });
+      try {
+        const up = await fetch(target, { signal: AbortSignal.timeout(15000), redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
+        const status = up.status;
+        const type = up.headers.get('content-type') || 'text/html';
+        const body = await up.arrayBuffer();
+        res.writeHead(status, {
+          'Content-Type': type,
+          'Cache-Control': 'no-cache',
+          // deliberately ABSENT: X-Frame-Options and CSP frame-ancestors (so the HUD can frame it)
+        });
+        res.end(Buffer.from(body));
+      } catch (e) { sendJson(res, 502, { error: `embed fetch failed: ${e.message}` }); }
+      return;
     }
 
     let f = path.join(__dir, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);

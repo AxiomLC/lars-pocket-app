@@ -236,6 +236,56 @@ It tells Lars to use `hud_display` (media: iframe for pages/dashboard, video for
 `hud_dismiss`, keep replies short (streaming voice), and emit interim lines for >4s work. No runtime
 Skill is needed — the `hud` **plugin toolset** is the mechanism (see §10 gotcha #3).
 
+### Two "Gateway" things + multiplex — and the dashboard-restart rule
+
+- **`:9119` is served by the `hermes dashboard` process** — this is the inbound web/RPC server our app
+  connects to (`/api/ws`). **It must be running for the app to work.**
+- **Per-profile "Gateway Status: Off" is normal.** With **multiplexing ON**, there is exactly ONE host
+  gateway that serves every profile (`lars`, `hermes-desktop-coder`, ...). Profiles *do not* run their
+  own gateway (the gateway-restart log says so verbatim: "Exactly one gateway per host... the profile
+  does not get a gateway of its own"). "Off" per-profile = correct multiplex design, not a fault.
+- **`8642` is the optional OpenAI API server (OFF, not needed by our app).** Port warnings about it in
+  old gateway logs are noise.
+- **Restart rule:** the `:9119` `hermes dashboard` process caches its plugin/tool registry at startup.
+  After ANY major edit (enabling a plugin, changing config, editing SOUL) you must **restart the
+  `hermes dashboard` process** (not just the desktop Electron app) and start a **new** Lars session —
+  otherwise the running process serves stale tools (e.g. Lars "doesn't know" the `hud_display` tool).
+  Restart: kill the dashboard PID then `hermes dashboard`.
+
+---
+
+## 6B. HUD fixes — external page/video rendering + spoken-thought filtering
+
+Two integration fixes made during live testing (Beta v1.5):
+
+### 1. External web pages / non-YouTube video won't frame (kanban ✓, pages ✗)
+
+`summonPanel` iframes arbitrary URLs directly, but external sites send
+`X-Frame-Options`/CSP `frame-ancestors` and refuse framing. The kanban works only
+because `:9119` doesn't frame-block.
+
+**Fix — `GET /api/embed?url=<encoded>` proxy in `server.js`:** fetches the target
+server-side and re-serves it **without** `X-Frame-Options`/CSP `frame-ancestors`, so
+it can be iframed (mirrors jarvis_ai's original `:9443` proxy, which we didn't port
+at first). The HUD's `summonPanel` now routes **non-YouTube** content through
+`/api/embed`; **YouTube keeps its native `/embed/` form** (`embedURL()`), which is
+already frame-able. Any URL not matching `youtube|youtu.be` goes through the proxy.
+
+> Caveat: a few sites break inside iframes via JS checks, and heavy JS/SPA or
+> login-gated pages won't fully render (same limitation as the original repo).
+
+### 2. Lars's tool-call "thoughts" were being spoken aloud
+
+Lars's interim narration (`"ok, checking on that..."`), tool JSON, `<HUD DISPLAY>`
+tags, and URLs all streamed as `message.delta` `payload.text` and were read out by
+TTS (because `turn.push()` forwarded every delta verbatim).
+
+**Fix — `cleanSpokenText()` in `server.js`:** `turn.push()` now passes each delta
+through a filter that strips `<HUD ...>`/HTML tags, tool-call JSON, tool names
+(`hud_display`, `web_search`, …), URLs, and markdown — only real deliverable prose
+reaches the SSE/TTS stream. A `sawRaw` counter ensures a turn that produced only
+filtered narration still completes on `message.complete` (no SSE hang).
+
 ---
 
 ## 7. Commands
@@ -274,7 +324,8 @@ curl http://127.0.0.1:9119/           # hermes gateway (token auto-discover)
 - [x] 3A — HUD shell served at `/hud/`; VIEWS iframes point at `:9119` (no frame-block — verified); SSE summon channel (`/events` + `/api/summon`) + `hud_display` plugin brought in & adapted
 - [x] 3A deploy — `hud_display` plugin **deployed into the `lars` profile scope** (`profiles\lars\plugins\hud_display\`) + enabled in `profiles\lars\config.yaml` `plugins.enabled`; `hud` toolset auto-enables (no `hermes tools enable` needed). Profile-setup steps documented in §6A.
 - [x] 3B — **voice grafted onto the HUD** (`/hud/` loads `state.js` + `app.js` verbatim): armed mic, re-arm button (chat row, next to SEND/CLR), barge-in, Pocket playback all work; orb/ring + Space = mic; idle ring label = **L.A.R.S**
-- [ ] 3B test — confirm voice round-trip + barge-in live in `/hud/`
+- [x] 3B test — voice round-trip + barge-in confirmed live in `/hud/`
+- [x] 3B-HUD fixes (Beta v1.5) — external pages/videos render via `/api/embed` proxy; Lars's tool-call thoughts no longer spoken (see §6B)
 - [ ] 3C — side panels: `:9119` RPC stats + local psutil + token tally (placeholders first)
 
 **Later:**
@@ -297,3 +348,8 @@ curl http://127.0.0.1:9119/           # hermes gateway (token auto-discover)
   streaming speed). No `hermes tools enable hud` required.
 - **The `lars` profile is its own Hermes home** — `profiles\lars\` (config.yaml, SOUL.md, plugins/). Profile
   settings override global Hermes. Deploy plugin/config changes there, not the global scope.
+- **External pages must be proxied to iframe** — raw iframes are blocked by `X-Frame-Options`/CSP. Use
+  `/api/embed?url=` strip-proxy (HUD routes non-YouTube content through it; YouTube keeps `/embed/`).
+- **Filter spoken deltas** — Lars's tool narration/JSON/HTML in `message.delta` `payload.text` is not meant
+  to be heard; `cleanSpokenText()` strips it before TTS. A `sawRaw` counter prevents an all-filtered turn
+  from hanging on `message.complete`.
