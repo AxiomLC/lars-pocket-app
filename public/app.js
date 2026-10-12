@@ -130,6 +130,7 @@ State.onChange((prev, next, label, expected) => {
   el.status.textContent = label || next[0].toUpperCase() + next.slice(1);
   if (prev !== next) log(`State: ${prev} → ${next}`, expected ? '' : 'warn');
   if (!expected) console.warn(`[Voice] unexpected transition ${prev} → ${next}`);
+  syncVoiceButtons(); meterSync();                    // keep VOICE/BARGE/STOP glows + level bar truthful
 });
 
 /* ---- 3e. Catch anything we didn't handle ---- */
@@ -296,6 +297,7 @@ async function ensureMic() {
     log(`Mic: ${track.label} | echoCancellation=${s.echoCancellation} noiseSuppression=${s.noiseSuppression}`,
         s.echoCancellation ? 'ok' : 'warn');
     if (!s.echoCancellation) log('Browser did not enable echo cancellation on this mic — use headphones', 'err');
+    refreshMicStatus?.();
     return true;
   } catch (e) {
     log(`Mic access failed: ${e.message}`, 'err');
@@ -489,7 +491,12 @@ async function sendToLLM(userText) {
     if (stale()) return;
     run.lastSpeechEnd = performance.now();
     log('Playback done');
-    State.set(State.armed && State.rearm ? 'listening' : 'idle');
+    // Voice still armed -> back to listening AND actually reopen the mic. With
+    // barge OFF the mic was never re-armed during playback, so without this the
+    // turn ended 'idle' with armed stuck true: lamp went red and the next Orb
+    // press fell into the turn-OFF branch (voice dead until reload).
+    if (State.armed) { State.set('listening'); if (!stt.running) startListening(); }
+    else State.set('idle');
   };
 
   /* ---- 8b. Chunker → speaker ---- */
@@ -554,7 +561,7 @@ async function sendToLLM(userText) {
     log(`Chat error: ${e.message}`, 'err');
     addBubble('a', `Error: ${e.message}`, 'i');
     State.set(State.armed ? 'listening' : 'idle');
-    if (State.armed && State.rearm) startListening();
+    if (State.armed && !stt.running) startListening();      // barge OFF must not orphan a green lamp with no mic
   }
 }
 
@@ -672,27 +679,113 @@ function commitUtterance() {
    ===================================================================== */
 
 /* ---- 10a. Mic button: start talking / stop everything ---- */
+/* ========================= control coupling + widgets ========================= */
+/* VOICE CHAT (State.armed) is the master switch; STREAMING only exists while
+   voice chat is on; STOP's badge is red only when everything is idle. */
+function syncVoiceButtons() {
+  if (!State.armed && State.rearm) State.rearm = false;              // voice chat OFF => streaming OFF
+  if (el.rearm) {
+    el.rearm.classList.toggle('on', State.rearm);
+    el.rearm.textContent = `STREAMING: ${State.rearm ? 'ON' : 'OFF'}`;
+  }
+  if (el.stop) el.stop.classList.toggle('stopped', !State.armed && State.is('idle'));   // red only when everything is stopped
+  if (el.mic) el.mic.classList.toggle('on', State.armed && !State.is('idle'));
+}
+
+/* ---- input level meter: real mic dB via AnalyserNode (canonical MDN RMS loop).
+   Runs ONLY while a mic track is live AND voice/test is active; bar rests at 0
+   otherwise. One AnalyserNode + rAF byte-read — negligible cost. ---- */
+let meterRaf = null, meterSrcNode = null, meterSrcStream = null, meterAn = null, meterBuf = null, meterPeak = -100;
+function drawLevel(db) {
+  const bar = document.getElementById('levelBar');
+  if (bar) bar.style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + '%';   // -60..0 dBFS
+}
+function meterSync() {
+  const track = stt.mic && stt.mic.getAudioTracks && stt.mic.getAudioTracks()[0];
+  if (track && track.readyState === 'live' && (State.armed || State.testMode)) meterStart();
+  else meterStop();
+}
+function meterStart() {
+  if (meterRaf) return;
+  try {
+    const ctx = getAudioCtx();
+    if (!meterAn || meterSrcStream !== stt.mic) {                      // (re)build when the stream changed
+      meterSrcNode = ctx.createMediaStreamSource(stt.mic);
+      meterAn = ctx.createAnalyser(); meterAn.fftSize = 512; meterAn.smoothingTimeConstant = 0;
+      meterBuf = new Uint8Array(meterAn.fftSize);
+      meterSrcNode.connect(meterAn);
+      meterSrcStream = stt.mic;
+    }
+    meterRaf = requestAnimationFrame(meterTick);
+  } catch {}
+}
+function meterStop() { if (meterRaf) { cancelAnimationFrame(meterRaf); meterRaf = null; } drawLevel(-100); }
+function meterTick() {
+  meterRaf = null;
+  meterAn.getByteTimeDomainData(meterBuf);
+  let sum = 0;
+  for (let i = 0; i < meterBuf.length; i++) { const v = (meterBuf[i] - 128) / 128; sum += v * v; }
+  const db = sum > 0 ? 20 * Math.log10(Math.sqrt(sum / meterBuf.length)) : -100;
+  drawLevel(db);
+  if (db > meterPeak) meterPeak = db;
+  meterRaf = requestAnimationFrame(meterTick);
+}
+
+/* ---- Microphone row: verification that the LOCAL mic is granted/live,
+   never Lars's reply states ---- */
+async function refreshMicStatus() {
+  const txt = document.getElementById('micState'), dot = document.getElementById('micDot');
+  if (!txt) return;
+  const track = stt.mic && stt.mic.getAudioTracks && stt.mic.getAudioTracks()[0];
+  const live = !!(track && track.readyState === 'live');
+  if (live && State.armed) { txt.textContent = 'live'; if (dot) dot.className = 'dot on'; return; }
+  try {
+    const p = await navigator.permissions.query({ name: 'microphone' });
+    txt.textContent = p.state === 'granted' ? (live ? 'OK — idle' : 'OK — ready')
+      : p.state === 'denied' ? 'BLOCKED' : 'not allowed yet';
+    if (dot) dot.className = 'dot ' + (p.state === 'granted' || live ? 'on' : 'off');
+  } catch {
+    txt.textContent = live ? 'OK — ready' : '—';
+    if (dot) dot.className = 'dot ' + (live ? 'on' : 'off');
+  }
+}
+function setEchoStatus(msg, ok) {
+  const s = document.getElementById('echoStatus');
+  if (!s) return;
+  s.textContent = msg;
+  s.className = ok === true ? 'ok' : ok === false ? 'err' : '';
+}
+
 el.mic.onclick = () => {
   getAudioCtx();                                  // unlock audio inside the user gesture
-  if (State.armed || State.is('speaking', 'listening')) {
-    stopListening(); cancelEverything('user stop'); State.set('idle');
-    log('Stopped');
+  if (State.armed || State.is('listening')) {      // VOICE CHAT off: mic ONLY — never touches Lars's
+    stopListening();                               // running reply (no cancelEverything: it finishes)
+    log('Voice chat OFF (mic only — Lars keeps talking)');
+    if (State.is('listening')) State.set('idle');
+    syncVoiceButtons();
     return;
   }
-  State.armed = true; stt.buf = ''; stt.interim = '';
-  log('Talk pressed');
+  State.armed = true; State.rearm = true;         // VOICE CHAT on => streaming on, STOP back to normal
+  stt.buf = ''; stt.interim = '';
+  log('Voice chat ON');
   startListening();
+  syncVoiceButtons();
 };
 
-/* ---- 10b. Stop ---- */
-el.stop.onclick = () => { stopListening(); cancelEverything('stop button'); State.set('idle'); };
+/* ---- 10b. Stop — kills Lars's action AND all voice chat (VOICE CHAT re-arms) ---- */
+el.stop.onclick = () => {
+  stopListening(); cancelEverything('stop button'); State.set('idle');
+  State.rearm = false;
+  log('STOP — Lars stopped + voice chat + streaming off', 'warn');
+  syncVoiceButtons();
+};
 
-/* ---- 10c. Re-arm toggle (turn off if barge-in misbehaves) ---- */
+/* ---- 10c. Streaming toggle (only meaningful while VOICE CHAT is on) ---- */
 el.rearm.onclick = () => {
+  if (!State.armed) { log('Streaming needs VOICE CHAT on', 'warn'); return; }
   State.rearm = !State.rearm;
-  el.rearm.classList.toggle('on', State.rearm);
-  el.rearm.textContent = `Re-arm: ${State.rearm ? 'On' : 'Off'}`;
-  log(`Re-arm ${State.rearm ? 'ON' : 'OFF'}`, 'warn');
+  log(`Streaming ${State.rearm ? 'ON' : 'OFF'}`, 'warn');
+  syncVoiceButtons();
 };
 
 /* ---- 10d. Keyboard input ---- */
@@ -712,33 +805,45 @@ function sendTyped() {
 el.send.onclick = sendTyped;
 el.txt.onkeydown = e => { if (e.key === 'Enter') sendTyped(); };
 
-/* ---- 10e. Clear chat ---- */
-el.clear.onclick = () => { el.chat.innerHTML = ''; run.history = []; log('Chat cleared'); };
+/* ---- 10e. Clear chat (only on the legacy page — HUD has no CLR button) ---- */
+if (el.clear) el.clear.onclick = () => { el.chat.innerHTML = ''; run.history = []; log('Chat cleared'); };
 
-/* ---- 10f. Echo test: play a line, stay silent, log whatever the mic picks up ----
-   No "heard during playback" lines at the end = echo cancellation fully suppressed playback. */
+/* ---- 10f. MIC TEST — one press tests both: rising tone on the speakers (confirm
+   by ear) + 1.6 s of REAL mic input (level bar animates live) → verdict chip:
+   MIC + SPK OK / NO MIC INPUT. No speech playback, no hidden echo analysis. ---- */
 el.echo.onclick = async () => {
-  getAudioCtx(); stopListening(); cancelEverything();
-  if (!await ensureMic()) return;
+  getAudioCtx(); stopListening(); cancelEverything('mic test');
+  State.testMode = true; State.rearm = false; State.set('idle', 'Mic test'); syncVoiceButtons();
+  if (!await ensureMic()) { State.testMode = false; meterSync(); setEchoStatus('MIC BLOCKED', false); return; }
 
-  const line = 'This is an echo test. If my own voice leaks into your microphone, you will see it in the log under heard during playback.';
-  State.testMode = true; State.armed = true;
-  run.spokenText = '';                            // empty on purpose: every heard word is reported as leakage
-  stt.lastHeardLog = '';
-  log('Echo test: playing a line; stay silent. Any "heard" lines mean leakage.', 'warn');
-  State.set('thinking', 'Echo test…');
+  // 1) speakers: short rising tone — user confirms audibly
+  try {
+    const ctx = getAudioCtx(), t0 = ctx.currentTime;
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, t0);
+    osc.frequency.linearRampToValueAtTime(880, t0 + 0.5);
+    g.gain.setValueAtTime(0.001, t0);
+    g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.06);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.6);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(t0); osc.stop(t0 + 0.65);
+  } catch {}
+  log('Mic test: tone sent to speakers — confirm it was audible', 'warn');
+  setEchoStatus('TESTING…', null);
 
-  speaker.reset();
-  speaker.onFirstAudio = () => { run.speakingStart = performance.now(); State.set('speaking', 'Echo test'); startListening(); };
-  speaker.onDone = () => {
-    run.lastSpeechEnd = performance.now();
-    setTimeout(() => {                            // wait out the echo tail, then report
-      stopListening(); State.testMode = false; State.set('idle');
-      log('Echo test finished. No "heard" lines = echo cancellation suppressed the playback.', 'ok');
-    }, CFG.TAIL_MS);
-  };
-  speaker.push(line);
-  speaker.end();
+  // 2) mic: meter samples real input, capture the peak over the window
+  meterPeak = -100; meterSync();
+  await new Promise(r => setTimeout(r, 1600));
+  const peak = meterPeak;
+  State.testMode = false; meterSync();           // bar rests unless voice is armed
+
+  // 3) verdict on the chip
+  const micOk = peak > -45;
+  setEchoStatus(micOk ? 'MIC + SPK OK' : 'NO MIC INPUT', micOk);
+  log(`Mic test: peak ${peak.toFixed(0)} dB → ${micOk ? 'input OK' : 'no mic input from mic'}`, micOk ? 'ok' : 'err');
+  refreshMicStatus();
 };
 
 log('App ready', 'ok');
+refreshMicStatus(); meterSync();

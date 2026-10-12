@@ -9,6 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Readable } from 'node:stream';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
@@ -119,6 +120,7 @@ function wsUrl(token) {
   return `${HERMES_WS_ORIGIN.replace(/^http/, 'ws')}/api/ws?${q}`;
 }
 
+const unknownEv = {};       // distinct WS event kinds seen (first-3 logged) for compaction/notice discovery
 function connectHermes() {
   if (hermesWs) return;
   discoverHermesToken().then(token => {
@@ -145,7 +147,13 @@ function connectHermes() {
         hermesReady = true;
         console.log('[hermes] gateway.ready');
       }
-      // other event kinds (thinking.delta, reasoning.delta, tool.*, etc.) are ignored
+      // Log unseen event kinds (compaction/notices/session lineage) so a real
+      // compaction or session-rotation signal becomes identifiable in server.log.
+      // First 3 occurrences per type only — thinking.delta etc. must not flood it.
+      if (type) {
+        unknownEv[type] = (unknownEv[type] || 0) + 1;
+        if (unknownEv[type] <= 3) hlog(`event: ${type} ${JSON.stringify(params).slice(0, 220)}`);
+      }
     };
     ws.onerror = () => {};
     ws.onclose = () => { hermesReady = false; hermesWs = null; };
@@ -174,6 +182,10 @@ let larsSessionId = null;
 let settleUntil = 0;         // drop inbound events briefly after session.interrupt
 let lastDeltaAt = 0;         // when the last message.delta arrived (for drain detection)
 let interruptAt = 0;         // when the most recent session.interrupt was sent
+let lastTtfsMs = null;       // prompt.submit -> first spoken delta (LARS SESSION panel)
+
+// Per-model context caps (tokens) for the context-load bar. Extend as models change.
+const CTX_CAPS = { 'gpt-oss-120b': 131072 };
 
 const HLOG = path.join(__dir, 'logs', 'server.log');
 function hlog(line) { try { fs.appendFileSync(HLOG, `[${new Date().toISOString()}] ${line}\n`); } catch {} }
@@ -240,11 +252,16 @@ function streamHermesChat(req, res, messages) {
   // Per-turn promise + relay (registered as the current turn).
   const turn = {
     id: hermesSeq++, chars: 0, sawRaw: 0,
+    submitAt: null, firstSpokenAt: null,
     push(text) {
       this.sawRaw++;                       // any delta of THIS turn (even if filtered out of speech)
       const clean = cleanSpokenText(text);
       // Only forward a delta to the spoken stream if it contains real deliverable text.
       if (!clean) return;
+      if (!this.firstSpokenAt) {
+        this.firstSpokenAt = Date.now();
+        if (this.submitAt) lastTtfsMs = this.firstSpokenAt - this.submitAt;
+      }
       this.chars += clean.length;
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: clean } }] })}\n\n`);
     },
@@ -270,8 +287,22 @@ function streamHermesChat(req, res, messages) {
         hlog(`drained after interrupt (quiet since ${Date.now() - lastDeltaAt}ms)`);
       }
       hlog(`submit: ${JSON.stringify(userText).slice(0, 80)} (turn ${turn.id})`);
-      const r = await hermesRpc('prompt.submit', { session_id: sid, text: userText }, 60000);
+      turn.submitAt = Date.now();
+      let r = await hermesRpc('prompt.submit', { session_id: sid, text: userText }, 60000);
       hlog(`prompt.submit result: ${JSON.stringify(r?.result || r?.error || 'none').slice(0, 200)}`);
+      // Safety net: stale session id (compaction rotation / ws_orphan_reap / Hermes
+      // restart) -> recreate one fresh session and retry this turn exactly once.
+      const stale = r?.error && (r.error.code === 4001 || /not found|400?1/i.test(String(r.error.message || '')));
+      if (stale) {
+        hlog(`session stale (${JSON.stringify(r.error)}) -> recreating session, retrying once`);
+        larsSessionId = null;
+        const sid2 = await getOrCreateSession();
+        if (sid2) {
+          turn.submitAt = Date.now();
+          r = await hermesRpc('prompt.submit', { session_id: sid2, text: userText }, 60000);
+          hlog(`prompt.submit retry: ${JSON.stringify(r?.result || r?.error || 'none').slice(0, 200)}`);
+        }
+      }
       if (r?.error) throw new Error(r.error.message || 'prompt.submit failed');
       await Promise.race([completePromise, new Promise(r => setTimeout(r, 30000))]);
       hlog(`turn ${turn.id} complete, chars=${turn.chars}`);
@@ -336,9 +367,105 @@ function streamCerebras(req, res, messages) {
 }
 
 /* =====================================================================
+   DIAGNOSTICS — real per-process usage of Hermes.exe (+dashboard host) on
+   this local. No plugin/prereq: one PowerShell sample, two passes 600ms apart
+   for a true CPU% (Get-Process is cumulative), RAM = summed WorkingSet.
+   Name filter 'hermes' matches both the desktop Hermes.exe and hermes.exe CLIs.
+   Cached 3s so 5s HUD polling can never pile up shell spawns.
+   ===================================================================== */
+let diagCache = { up: false, cpuPct: 0, ramMb: 0, procs: 0, at: 0 };
+let diagBusy = false;
+function sampleHermesDiag() {
+  return new Promise(resolve => {
+    const script = [
+      "$p1 = Get-Process -Name hermes -ErrorAction SilentlyContinue",
+      "if (-not $p1) { Write-Output '{\"up\":false,\"cpuPct\":0,\"ramMb\":0,\"procs\":0}'; exit }",
+      "$c1 = ($p1 | Measure-Object CPU -Sum).Sum",
+      "$t1 = Get-Date",
+      "Start-Sleep -Milliseconds 600",
+      "$p2 = Get-Process -Name hermes -ErrorAction SilentlyContinue",
+      "$c2 = ($p2 | Measure-Object CPU -Sum).Sum",
+      "$rows = @($p2).Count",
+      "$mb = [int](($p2 | Measure-Object WorkingSet64 -Sum).Sum / 1MB)",
+      "$secs = ((Get-Date) - $t1).TotalSeconds",
+      "$pct = [math]::Max(0, [math]::Round((($c2 - $c1) / [math]::Max($secs, 0.001)) / [Environment]::ProcessorCount * 100, 1))",
+      "Write-Output ('{\"up\":true,\"cpuPct\":' + $pct + ',\"ramMb\":' + $mb + ',\"procs\":' + $rows + '}')",
+    ].join('; ');
+    let done = false;
+    const fin = v => { if (!done) { done = true; resolve(v); } };
+    try {
+      const ps = spawn('powershell', ['-NoProfile', '-Command', script]);
+      let out = '';
+      ps.stdout.on('data', d => out += d);
+      ps.on('close', () => { try { fin(JSON.parse(out.trim())); } catch { fin({ up: false, cpuPct: 0, ramMb: 0, procs: 0 }); } });
+      ps.on('error', () => fin({ up: false, cpuPct: 0, ramMb: 0, procs: 0 }));
+      setTimeout(() => { try { ps.kill(); } catch {} fin({ up: false, cpuPct: 0, ramMb: 0, procs: 0 }); }, 5000);
+    } catch { fin({ up: false, cpuPct: 0, ramMb: 0, procs: 0 }); }
+  });
+}
+
+/* =====================================================================
+   /dash — reverse proxy to the Hermes dashboard (:9119)
+   Lets bare KANBAN/CHAT views load SAME-ORIGIN so the HUD can hide the
+   dashboard's left menu (#app-sidebar). Two rewrites make the SPA work
+   from our origin:
+     1. HTML attributes src|href="/x"  ->  "/dash/x"  (resource loads)
+     2. an inline shim prefixes runtime absolute URLs in fetch / XHR /
+        EventSource / WebSocket / sendBeacon with "/dash".
+   Named routes above always win this page's cache of URLs; the static
+   fallback below parks anything else (fonts, missed assets) upstream.
+   The HERMES DASHBOARD view is NEVER proxied (direct :9119 iframe,
+   full menu, zero route clashes).
+   ===================================================================== */
+const DASH_UP = 'http://127.0.0.1:9119';
+const DASH_SHIM = '<script>(function(){var P=function(u){return (typeof u==="string"&&u.charAt(0)==="/"&&u.indexOf("/dash/")!==0)?"/dash"+u:u};'
+  // strip our /dash prefix from the LOCATION before the SPA router boots:
+  // the route table only knows /kanban, /chat … -> without this it renders nothing.
+  + 'try{if(location.pathname.indexOf("/dash/")===0){var z=location.pathname.slice(5)||"/";history.replaceState(null,"",z+location.search+location.hash)}}catch(e){};'
+  + 'if(window.fetch){var f=window.fetch.bind(window);window.fetch=function(i,o){return f(typeof i==="string"?P(i):i,o)}};'
+  + 'if(window.XMLHttpRequest){var o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.prototype.slice.call(arguments);if(typeof a[1]==="string")a[1]=P(a[1]);return o.apply(this,a)}};'
+  + 'if(window.EventSource){var E=window.EventSource;window.EventSource=function(u,x){return new E(P(u),x)}};'
+  + 'if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,x){if(typeof u==="string"){var m=u.match(/^(wss?:\/\/[^\/]+)(\/.*)?$/);if(m&&m[2]&&m[2].indexOf("/dash/")!==0)u=m[1]+"/dash"+m[2]}return new W(u,x)}};'
+  + 'try{if(navigator.sendBeacon){var b=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,d){return b(P(u),d)}}}catch(e){}'
+  + '})();<\/script>';
+async function dashProxy(req, res, ac) {
+  const tail = req.url.slice('/dash'.length) || '/';
+  try {
+    const hasBody = !['GET', 'HEAD'].includes(req.method);
+    let body;
+    if (hasBody) { const cs = []; for await (const c of req) cs.push(c); body = Buffer.concat(cs); }
+    const hdrs = {};
+    for (const [k, v] of Object.entries(req.headers)) if (!['host', 'connection'].includes(k)) hdrs[k] = v;
+    hdrs.host = '127.0.0.1:9119';
+    const up = await fetch(DASH_UP + tail, {
+      method: req.method, signal: ac.signal, redirect: 'manual',
+      headers: hdrs, ...(hasBody ? { body } : {}),
+    });
+    const hy = Object.fromEntries(up.headers);
+    delete hy['content-encoding']; delete hy['content-length'];   // undici already decoded the body
+    if (hy.location && String(hy.location).startsWith('/')) hy.location = '/dash' + hy.location;  // keep redirects inside the proxy
+    const ct = String(up.headers.get('content-type') || '');
+    if (ct.includes('text/html')) {
+      let text = await up.text();
+      text = text.replace(/(src|href)=(['"])\/(?!\/)(?!dash\/)/g, (m, a, q) => a + '=' + q + '/dash/');   // 1. resources (lambda: $-tokens proved unreliable here)
+      if (text.includes('</head>')) text = text.replace(/<head[^>]*>/i, m => m + DASH_SHIM);  // 2. runtime shim (first in head)
+      else text = DASH_SHIM + text;
+      res.writeHead(up.status, hy); res.end(Buffer.from(text, 'utf8')); return;
+    }
+    res.writeHead(up.status, hy);
+    if (req.method === 'HEAD') return res.end();
+    Readable.fromWeb(up.body).pipe(res);
+  } catch (e) {
+    if (e.name === 'AbortError') { try { res.end(); } catch {} return; }
+    if (!res.headersSent) { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'dash proxy: ' + e.message })); }
+    else try { res.end(); } catch {}
+  }
+}
+
+/* =====================================================================
    HTTP ROUTES
    ===================================================================== */
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   const ac = new AbortController();
   res.on('close', () => ac.abort());
   try {
@@ -355,9 +482,62 @@ http.createServer(async (req, res) => {
       try { pocketUp = (await fetch(POCKET_BASE + '/health', { signal: AbortSignal.timeout(800) })).ok; } catch {}
       return sendJson(res, 200, {
         host: `${os.cpus()[0]?.model || '?'}, ${(os.totalmem() / 2 ** 30).toFixed(1)} GB RAM, node ${process.version}`,
-        brain: BRAIN, pocketUrl: POCKET_URL, voice: E.POCKET_VOICE || 'alba', pocketUp,
+        brain: BRAIN, profile: BRAIN === 'hermes' ? HERMES_PROFILE : null, pocketUrl: POCKET_URL, voice: E.POCKET_VOICE || 'alba', pocketUp,
         hermesUrl: BRAIN === 'hermes' ? HERMES_WS_ORIGIN : undefined,
       });
+    }
+
+    // --- LARS SESSION panel: our live session merged with Hermes /api/sessions (REST :9119) ---
+    if (req.method === 'GET' && req.url === '/api/session/stats') {
+      const out = {
+        ok: true, sessionId: larsSessionId, profile: HERMES_PROFILE, model: null,
+        turns: 0, tokIn: 0, tokOut: 0, ctxPct: null, cap: null, ttfsMs: lastTtfsMs,
+        today: { turns: 0, tokIn: 0, tokOut: 0 },
+      };
+      try {
+        const token = await discoverHermesToken();
+        const r = await fetch(`${HERMES_WS_ORIGIN}/api/sessions?profile=${encodeURIComponent(HERMES_PROFILE)}&limit=50`, {
+          headers: { 'X-Hermes-Session-Token': token || '' }, signal: AbortSignal.timeout(4000),
+        });
+        const list = (await r.json()).sessions || [];
+        // Our live session by id; fallback = newest session this app created (title voice-<ts>).
+        let mine = list.find(s => larsSessionId && s.id === larsSessionId)
+          || list.filter(s => String(s.title || '').startsWith('voice-'))
+                 .sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0];
+        if (mine) {
+          out.model = mine.model || null;
+          out.profile = mine.profile || HERMES_PROFILE;
+          out.turns = Math.ceil((mine.message_count || 0) / 2);
+          out.tokIn = mine.input_tokens || 0;
+          out.tokOut = mine.output_tokens || 0;
+          out.cap = CTX_CAPS[mine.model] || null;
+          if (out.cap) {
+            // Hermes sums input over API calls -> per-request context ~= (in + cache_read)/calls + avg out.
+            const calls = Math.max(1, mine.api_call_count || 1);
+            const ctx = Math.round((out.tokIn + (mine.cache_read_tokens || 0)) / calls) + Math.round(out.tokOut / calls);
+            out.ctxPct = Math.min(100, Math.round(ctx / out.cap * 100));
+          }
+        }
+        // Today's totals: only sessions this app starts (title voice-*), same profile.
+        const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+        const t0 = midnight.getTime() / 1000;
+        for (const s of list) {
+          if ((s.started_at || 0) < t0 || !String(s.title || '').startsWith('voice-')) continue;
+          out.today.turns += Math.ceil((s.message_count || 0) / 2);
+          out.today.tokIn += s.input_tokens || 0;
+          out.today.tokOut += s.output_tokens || 0;
+        }
+      } catch (e) { out.ok = false; out.error = String(e.message || e); }
+      return sendJson(res, 200, out);
+    }
+
+    // --- DIAGNOSTICS panel: Hermes.exe-only CPU/RAM (cached 3s, see sampleHermesDiag) ---
+    if (req.method === 'GET' && req.url === '/api/hermes/diag') {
+      if (Date.now() - diagCache.at < 3000 || diagBusy) return sendJson(res, 200, diagCache);
+      diagBusy = true;
+      diagCache = { ...await sampleHermesDiag(), at: Date.now() };
+      diagBusy = false;
+      return sendJson(res, 200, diagCache);
     }
 
     // --- HUD summon channel: 1) an open HUD subscribes to the SSE stream, ---
@@ -434,7 +614,13 @@ http.createServer(async (req, res) => {
     let f = path.join(__dir, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);
     // If the URL resolves to a directory (e.g. `/hud/`), serve its index.html.
     if (fs.existsSync(f) && fs.statSync(f).isDirectory()) f = path.join(f, 'index.html');
-    if (!f.startsWith(path.join(__dir, 'public')) || !fs.existsSync(f)) { res.writeHead(404); return res.end('not found'); }
+    if (!f.startsWith(path.join(__dir, 'public')) || !fs.existsSync(f)) {
+      // Not ours: park it on the dashboard (proxied /dash pages use root-absolute
+      // URLs my shim didn't catch: fonts, images, missed assets). Named routes
+      // above always win, so a dashboard /api/chat or /api/config only reaches
+      // ours if the HTML shim failed to prefix it — accepted, conscious trade.
+      return dashProxy(req, res, ac);
+    }
     const mime = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript' }[path.extname(f)] || 'text/plain';
     res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
     fs.createReadStream(f).pipe(res);
@@ -443,4 +629,24 @@ http.createServer(async (req, res) => {
     const refused = /fetch failed|ECONNREFUSED/.test(String(e) + String(e.cause));
     sendJson(res, 500, { error: refused ? 'Upstream not reachable (Pocket TTS still loading?)' : e.message });
   }
-}).listen(PORT, () => console.log(`lars-pocket-app → http://localhost:${PORT}  (brain=${BRAIN}, open in Chrome)`));
+});
+
+// --- WS relay: a proxied dashboard page opening /dash/api/ws (it XHRs its own
+// --- origin, the shim prefixes the path) is piped straight into :9119.
+server.on('upgrade', (req, socket, head) => {
+  try {
+    const target = (req.url || '/').replace(/^\/dash/, '') || '/';
+    const up = net.connect(9119, '127.0.0.1', () => {
+      const hdrs = Object.entries(req.headers)
+        .filter(([k]) => !['host', 'connection'].includes(k))
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\r\n');
+      up.write(`${req.method} ${target} HTTP/1.1\r\nhost: 127.0.0.1:9119\r\n${hdrs}\r\n\r\n`);
+      if (head && head.length) up.write(head);
+      socket.pipe(up); up.pipe(socket);
+    });
+    up.on('error', () => { try { socket.destroy(); } catch {} });
+    socket.on('error', () => { try { up.destroy(); } catch {} });
+  } catch { try { socket.destroy(); } catch {} }
+});
+
+server.listen(PORT, () => console.log(`lars-pocket-app → http://localhost:${PORT}  (brain=${BRAIN}, open in Chrome)`));

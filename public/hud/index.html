@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JARVIS</title>
+<title>LARS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="JARVIS">
+<meta name="apple-mobile-web-app-title" content="LARS">
 <meta name="theme-color" content="#050b14">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;600&display=swap" rel="stylesheet">
@@ -84,6 +85,15 @@ button.btn:hover{background:#0e3349; box-shadow:0 0 10px #00e5ff44}
 button.btn.danger{color:var(--red); border-color:#7a2a33; background:#240a0e}
 button.btn.danger:hover{background:#3a0e15; box-shadow:0 0 10px #ff4d5e55}
 button.btn.amber{color:var(--amber); border-color:#7a5a1a; background:#241c0a}
+/* toggle buttons (VOICE CHAT / STREAMING): red glow = OFF, green glow = ON */
+button.btn.tgl{color:var(--red); border-color:#7a2a33; background:#240a0e; box-shadow:0 0 8px #ff4d5e44}
+button.btn.tgl:hover{box-shadow:0 0 14px #ff4d5e77}
+button.btn.tgl.on{color:var(--teal); border-color:#0e5a52; background:#04231f; box-shadow:0 0 10px #19f0d855}
+button.btn.tgl.on:hover{box-shadow:0 0 18px #19f0d888}
+/* small utility button (MIC TEST) + STOP glow (red only when everything is stopped) */
+button.btn.sm{font-size:10px; padding:2px 8px; letter-spacing:.5px}
+button.btn.stopped{color:var(--red); border-color:#7a2a33; background:#240a0e; box-shadow:0 0 8px #ff4d5e55}
+button.btn.stopped:hover{box-shadow:0 0 14px #ff4d5e88}
 #stopBtn{display:none}
 #approvals{position:absolute; top:8px; left:50%; transform:translateX(-50%); z-index:20; width:min(560px,92%); display:flex; flex-direction:column; gap:8px}
 .appr{border:1px solid var(--amber); background:#1a1305f2; padding:12px 14px;
@@ -137,7 +147,7 @@ body.booted header{animation:panelIn .4s backwards}
   75%{opacity:.35}85%{opacity:1}100%{opacity:1; transform:none}}
 
 /* ---------------- holographic media panels ---------------- */
-#holoStage{position:fixed; inset:0; z-index:38; pointer-events:none;
+#holoStage{position:fixed; inset:0; z-index:46; pointer-events:none;
   perspective:1200px; transform-style:preserve-3d; overflow:hidden}
 #grid{transition:transform .45s ease, filter .45s ease}
 #grid.dolly{transform:scale(1.02); filter:brightness(.7)}
@@ -202,6 +212,12 @@ body.booted header{animation:panelIn .4s backwards}
   text-align:right; opacity:.85; transition:opacity .6s}
 
 /* ---------------- mobile / narrow screens ---------------- */
+/* media panels: standard 16:9; app panels (kanban etc.) keep flexible sizing */
+.holo.media169{width:min(56vw,820px); height:auto; aspect-ratio:16/9}
+.holo.pos-left.media169,.holo.pos-right.media169{width:min(40vw,560px); height:auto}
+.holoBar{cursor:grab; user-select:none; touch-action:none}
+.holo.dragging{animation:none!important}
+.holo.dragging .holoBar{cursor:grabbing}
 @media (max-width:880px){
   .holo,.holo.pos-left,.holo.pos-right{width:94vw; height:50vh; left:50%}
   body{overflow-y:auto; overflow-x:hidden}
@@ -244,13 +260,13 @@ footer{
 <div id="kbd" style="display:none"></div>
 <div id="typed" style="display:none"></div>
 <div id="boot">
-  <div id="bootLogo">J.A.R.V.I.S</div>
+  <div id="bootLogo">L.A.R.S</div>
   <div id="bootSub">HERMES NEURAL INTERFACE</div>
   <div id="bootLines"></div>
 </div>
 <div id="grid">
   <header>
-    <h1>J.A.R.V.I.S</h1>
+    <h1>L.A.R.S</h1>
     <div class="sub">HERMES AGENT INTERFACE &nbsp;//&nbsp; <span id="connState">LINK DOWN</span></div>
     <div id="clock">--:--:--</div>
   </header>
@@ -263,32 +279,37 @@ footer{
       <div class="kv"><span>Input level</span><b>&nbsp;</b></div>
       <div class="bar"><i id="levelBar"></i></div>
       <div id="interim" style="font-size:11px; color:var(--txt-dim); min-height:14px; margin-top:4px"></div>
-      <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap">
-        <button class="btn" id="mic" style="flex:1">ENGAGE VOICE</button>
-        <button class="btn danger" id="stop">■ STOP</button>
-        <button class="btn" id="echo" style="max-width:100%">ECHO TEST</button>
+      <div style="margin-top:6px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+        <button class="btn sm" id="echo" title="Plays a test tone on the speakers and measures real mic input">MIC TEST</button>
+        <b id="echoStatus" style="font-size:10px; color:var(--txt-dim)">—</b>
+      </div>
+      <div style="border-top:1px solid var(--line); margin:8px 0"></div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap">
+        <button class="btn tgl" id="mic" style="flex:1" title="Voice chat on — mic listens; off — mic only, Lars keeps talking. Same as clicking the orb">VOICE CHAT</button>
+        <button class="btn tgl on" id="rearm" title="Streaming on — mic stays live during Lars's reply so you can cut him off; off = turn-taking only">STREAMING: ON</button>
       </div>
     </div>
     <div class="panel"><h2><span>AGENT ACTIVITY</span><span class="num">02</span></h2>
       <div id="activity"><div>— no activity yet —</div></div>
     </div>
-    <div class="panel"><h2><span>TURN METRICS</span><span class="num">03</span></h2>
-      <div class="kv"><span>Turns</span><b id="mTurns">0</b></div>
-      <div class="kv"><span>Last: speech→audio</span><b id="mFirst">—</b></div>
-      <div class="kv"><span>Last: total</span><b id="mTotal">—</b></div>
-      <div class="kv"><span>Brain</span><b id="mBrain">—</b></div>
+    <div class="panel"><h2><span>LARS SESSION</span><span class="num">03</span></h2>
+      <div class="kv"><span>Profile</span><b id="lsProfile">—</b></div>
+      <div class="kv"><span>Model</span><b id="lsModel">—</b></div>
+      <div class="kv"><span>Turns</span><b id="lsTurns">0</b></div>
+      <div class="kv"><span>Tokens in / out</span><b id="lsTok">—</b></div>
+      <div class="kv"><span>Last: speech→audio</span><b id="lsTtfs">—</b></div>
+      <div class="kv"><span>Context est.</span><b id="lsCtx">—</b></div>
+      <div class="bar"><i id="lsCtxBar"></i></div>
+      <div class="kv"><span>Tokens today</span><b id="lsTodayTok">—</b></div>
+      <div class="kv"><span>Turns today</span><b id="lsTodayTurns">—</b></div>
+      <div class="kv" id="lsWarnRow" style="display:none"><span>⚠ Context</span><b id="lsWarn" class="err">80%+ — /compact or new session</b></div>
     </div>
     <div class="panel"><h2><span>VIEWS</span><span class="num">04</span></h2>
       <button class="btn viewBtn" onclick="openView('KANBAN','/kanban')">▸ KANBAN BOARD</button>
       <button class="btn viewBtn" onclick="openView('HERMES DASHBOARD','/')">▸ HERMES DASHBOARD</button>
       <button class="btn viewBtn" onclick="openView('CHAT','/chat')">▸ DASHBOARD CHAT</button>
     </div>
-    <div class="panel"><h2><span>SESSION</span><span class="num">05</span></h2>
-      <div class="kv"><span>Conversation</span><b>jarvis-main</b></div>
-      <div class="kv"><span>Memory scope</span><b>jarvis:user:main</b></div>
-      <div class="kv"><span>Active sessions</span><b id="hSessions">—</b></div>
-      <div class="kv"><span>Running agents</span><b id="hAgents">—</b></div>
-    </div>
+
   </div>
 
   <!-- CENTER -->
@@ -302,39 +323,27 @@ footer{
     <div id="chatRow">
       <input id="txt" placeholder="Type to Hermes… (voice: click the ring)" autocomplete="off">
       <button class="btn" id="send">SEND</button>
-      <button class="btn amber" id="rearm" title="Re-arm mic when Lars starts speaking (barge-in)">Re-arm: ON</button>
-      <button class="btn" id="clear" title="Clear the visible chat (history stays in Hermes)">CLR</button>
+      <button class="btn" id="stop" title="Stops Lars's action AND all voice chat (VOICE CHAT re-arms it)">■ STOP</button>
     </div>
   </div>
 
   <!-- RIGHT COLUMN -->
   <div class="col">
-    <div class="panel"><h2><span>MODELS LOADOUT</span><span class="num">06</span></h2>
-      <div class="kv"><span>Brain</span><b>hermes-agent</b></div>
-      <div class="kv"><span>STT</span><b>whisper base.en</b></div>
-      <div class="kv"><span>TTS</span><b>ElevenLabs Flash v2.5</b></div>
-      <div class="kv"><span>Fallback</span><b>claude-haiku-4-5</b></div>
-      <div style="border-top:1px solid var(--line); margin:6px 0 4px"></div>
-      <div class="kv"><span>Tokens today</span><b id="uTok">—</b></div>
-      <div class="kv" id="uCostRow" style="display:none"><span>Est. cost today</span><b id="uCost">—</b></div>
-      <div class="kv"><span>Turns today</span><b id="uTurns">—</b></div>
-      <div class="kv"><span>11Labs quota</span><b id="uTts">—</b></div>
-      <div class="bar"><i id="ttsBar"></i></div>
+    <div class="panel"><h2><span>STACK</span><span class="num">05</span></h2>
+      <div class="kv"><span>Brain</span><b id="stkBrain">—</b></div>
+      <div class="kv"><span>Model</span><b id="stkModel">—</b></div>
+      <div class="kv"><span>STT</span><b>Web Speech · browser</b></div>
+      <div class="kv"><span>TTS</span><b id="stkTts">—</b></div>
+      <div class="kv"><span>TTS link</span><b id="stkTtsUp">—</b></div>
+      <div class="kv"><span>HUD feed</span><b id="stkSse">—</b></div>
     </div>
-    <div class="panel"><h2><span>MACHINES</span><span class="num">07</span></h2>
-      <div id="machinesList"><div class="kv"><span>loading…</span></div></div>
-    </div>
-    <div class="panel"><h2><span>SKILLS</span><span class="num">08</span></h2>
-      <div class="kv"><span>Loaded skills</span><b id="skillCount">—</b></div>
-      <div id="skillsList"></div>
-    </div>
-    <div class="panel"><h2><span>DIAGNOSTICS</span><span class="num">09</span></h2>
-      <div class="kv"><span><span class="dot" id="apiDot"></span>Hermes API</span><b id="apiState">—</b></div>
-      <div class="kv"><span>CPU</span><b id="hCpu">—</b></div>
-      <div class="kv"><span>Memory</span><b id="hMem">—</b></div>
+    <div class="panel"><h2><span>DIAGNOSTICS</span><span class="num">06</span></h2>
+      <div class="kv"><span>Hermes CPU</span><b id="hCpu">—</b></div>
+      <div class="kv"><span>Hermes RAM</span><b id="hMem">—</b></div>
+      <div class="kv"><span>Procs</span><b id="hProcs">—</b></div>
       <div class="kv"><span>Refreshed</span><b id="hWhen">—</b></div>
     </div>
-    <div class="panel"><h2><span>AUTOMATIONS</span><span class="num">10</span></h2>
+    <div class="panel"><h2><span>AUTOMATIONS</span><span class="num">07</span></h2>
       <div id="jobsList"><div>—</div></div>
     </div>
   </div>
@@ -479,8 +488,8 @@ function showApproval(e){
    until then. VIEWS + Holo Panels (openView/summonPanel) already work. */
 function connectSummon(){
   const es=new EventSource("/events");
-  es.onopen=()=>{$("wsDot").className="dot on";$("wsState").textContent="online";$("connState").textContent="LINK ACTIVE";$("footMsg").textContent="HUD LINK CONNECTED"};
-  es.onerror=()=>{$("wsDot").className="dot off";$("wsState").textContent="offline";$("connState").textContent="LINK DOWN"};
+  es.onopen=()=>{$("wsDot").className="dot on";$("wsState").textContent="online";$("connState").textContent="LINK ACTIVE";$("footMsg").textContent="HUD LINK CONNECTED";$("stkSse").textContent="LIVE";$("stkSse").className="ok"};
+  es.onerror=()=>{$("wsDot").className="dot off";$("wsState").textContent="offline";$("connState").textContent="LINK DOWN";$("stkSse").textContent="DOWN";$("stkSse").className="err"};
   es.addEventListener("summon_panel",ev=>{try{summonPanel(JSON.parse(ev.data))}catch{}});
   es.addEventListener("dismiss_panels",()=>dismissAllPanels());
 }
@@ -498,18 +507,34 @@ function ensureCtx(){
 }
 
 /* ============================== voice ============================== */
-// Voice (armed mic, re-arm, barge-in, sentence-chunked Pocket playback) and the
+// Voice (armed mic, streaming, sentence-chunked Pocket playback) and the
 // typed chat are owned by app.js/state.js — loaded AFTER this script (below) —
-// which binds #mic, #rearm, #stop, #echo, #send, #txt, #clear and appends .m
+// which binds #mic, #rearm, #stop, #echo, #send, #txt and appends .m
 // bubbles to #chat. The HUD bridge at the end drives the reactor from State.
 
 /* ---- pop-up viewer ---- */
 const DASH_PROXY=`http://127.0.0.1:9119`;
+// An iframe loaded through /dash is SAME-ORIGIN -> the HUD can hide the
+// dashboard's left menu (#app-sidebar) so bare views (KANBAN/CHAT) get the space.
+function bareify(fr){
+  try{
+    const d=fr.contentDocument;
+    if(d&&!d.getElementById("lars-bare-menu")){
+      const s=d.createElement("style"); s.id="lars-bare-menu";
+      s.textContent="#app-sidebar{display:none!important}";
+      (d.head||d.documentElement).appendChild(s);
+    }
+  }catch{}
+}
 function openView(name,path){
+  const bare=name!=="HERMES DASHBOARD";        // dashboard view keeps its menu (direct :9119 iframe)
   $("viewerTitle").textContent=name;
-  $("viewerIframe").src=DASH_PROXY+path;
+  const fr=$("viewerIframe");
+  fr.dataset.bare=bare?"1":"0";
+  fr.src=bare?("/dash"+path):(DASH_PROXY+path);
   $("viewer").classList.add("open");
 }
+$("viewerIframe").addEventListener("load",function(){if(this.dataset.bare==="1")bareify(this);});
 function closeView(){
   $("viewer").classList.remove("open");
   $("viewerIframe").src="about:blank";
@@ -526,24 +551,15 @@ addEventListener("keydown",e=>{
 
 /* ============================== widgets ============================ */
 async function jget(path){const r=await fetch("/api/hermes"+path);if(!r.ok)throw new Error(r.status);return r.json()}
-async function refreshHealth(){
+async function refreshDiag(){
   try{
-    const h=await jget("/health/detailed");
-    $("apiDot").className="dot on"; $("apiState").textContent="online";
-    const st=h.sessions||h.session_stats||{}; const rs=h.resources||{};
-    $("hSessions").textContent=st.active??st.total??"ok";
-    $("hAgents").textContent=h.running_agents??h.agents??"0";
-    $("hCpu").textContent=rs.cpu_percent!=null?rs.cpu_percent+"%":"—";
-    $("hMem").textContent=rs.memory_percent!=null?rs.memory_percent+"%":(rs.rss||"—");
+    const d=await (await fetch("/api/hermes/diag")).json();
+    $("hCpu").textContent=d.up?d.cpuPct+"%":"no procs";
+    $("hCpu").className=d.cpuPct>50?"err":"";
+    $("hMem").textContent=d.up?d.ramMb+" MB":"—";
+    $("hProcs").textContent=d.up?d.procs:"—";
     $("hWhen").textContent=new Date().toTimeString().slice(0,8);
-  }catch{ $("apiDot").className="dot off"; $("apiState").textContent="offline"; }
-}
-async function refreshSkills(){
-  try{
-    const s=await jget("/v1/skills"); const list=Array.isArray(s)?s:(s.data||s.skills||[]);
-    $("skillCount").textContent=list.length;
-    $("skillsList").innerHTML=list.slice(0,14).map(x=>`<div>▸ ${x.name||x}</div>`).join("");
-  }catch{ $("skillCount").textContent="?"; }
+  }catch{}
 }
 async function refreshJobs(){
   try{
@@ -553,46 +569,41 @@ async function refreshJobs(){
       :"<div>— none —</div>";
   }catch{ $("jobsList").innerHTML="<div>—</div>"; }
 }
-async function refreshMachines(){
-  try{
-    const r=await fetch("/api/machines"); const j=await r.json();
-    $("machinesList").innerHTML=(j.machines||[]).map(m=>{
-      const bits=[];
-      if(m.cpu!=null)bits.push(`CPU ${Math.round(m.cpu)}%`);
-      if(m.mem!=null)bits.push(`MEM ${Math.round(m.mem)}%`);
-      if(m.gpu_util!=null)bits.push(`GPU ${Math.round(m.gpu_util)}%`);
-      if(m.vram_used!=null&&m.vram_total!=null)bits.push(`VRAM ${m.vram_used}/${m.vram_total}G`);
-      if(m.gpu_temp!=null)bits.push(`${m.gpu_temp}°`);
-      if(!bits.length&&m.note)bits.push(m.note);
-      return `<div class="kv"><span><span class="dot ${m.online?"on":"off"}"></span>${m.name}</span><b>${bits.join(" · ")||(m.online?"online":"offline")}</b></div>`;
-    }).join("");
-  }catch{ $("machinesList").innerHTML="<div class='kv'><span>unavailable</span></div>"; }
-}
 const fmtK=n=>n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(1)+"k":String(n||0);
-async function refreshUsage(){
+// STACK panel: our real stack from /api/config + the live session model.
+let stkModelHint="";
+async function refreshStack(){
   try{
-    const r=await fetch("/api/usage"); const j=await r.json();
-    const t=j.llm?.today||{};
-    $("uTok").textContent=`${fmtK(t.llm_in||0)} in / ${fmtK(t.llm_out||0)} out`;
-    $("uTurns").textContent=t.turns||0;
-    if(j.llm?.today_cost!=null){$("uCostRow").style.display="flex";$("uCost").textContent="$"+j.llm.today_cost.toFixed(2)}
-    const e=j.elevenlabs;
-    if(e&&e.limit){
-      const pct=Math.round(e.used/e.limit*100);
-      $("uTts").textContent=`${fmtK(e.used)} / ${fmtK(e.limit)} (${100-pct}% left)`;
-      $("ttsBar").style.width=pct+"%";
-      $("uTts").className=pct>90?"err":pct>70?"warn":"";
-    }else{
-      // quota API unavailable (key needs user_read permission) → local tally
-      $("uTts").textContent=fmtK(t.tts_chars||0)+" chars today";
-      $("ttsBar").style.width="0%";
-    }
+    const c=await (await fetch("/api/config")).json();
+    $("stkBrain").textContent=(c.brain||"—")+(c.profile?" · "+c.profile:"");
+    $("stkTts").textContent="Pocket TTS · "+(c.voice||"alba");
+    $("stkTtsUp").textContent=c.pocketUp?"UP":"DOWN";
+    $("stkTtsUp").className=c.pocketUp?"ok":"err";
+    if(stkModelHint) $("stkModel").textContent=stkModelHint; // model comes from session stats on first load
   }catch{}
 }
-refreshHealth();refreshSkills();refreshJobs();refreshMachines();refreshUsage();
-setInterval(refreshUsage,60000);
-setInterval(refreshHealth,15000); setInterval(refreshJobs,60000); setInterval(refreshMachines,10000);
-setInterval(refreshSkills,120000);
+async function refreshSession(){
+  try{
+    const s=await (await fetch("/api/session/stats")).json();
+    $("lsProfile").textContent=s.profile||"—";
+    $("lsModel").textContent=s.model||"—";
+    stkModelHint=s.model||""; if(stkModelHint)$("stkModel").textContent=stkModelHint;
+    $("lsTurns").textContent=s.turns||0;
+    $("lsTok").textContent=fmtK(s.tokIn||0)+" / "+fmtK(s.tokOut||0);
+    $("lsTtfs").textContent=s.ttfsMs!=null?(s.ttfsMs/1000).toFixed(1)+" s":"—";
+    $("lsCtx").textContent=s.ctxPct!=null?s.ctxPct+"% of "+fmtK(s.cap):"—";
+    const bar=$("lsCtxBar"); bar.style.width=(s.ctxPct||0)+"%";
+    bar.style.background=s.ctxPct>=80?"crimson":"";
+    $("lsWarnRow").style.display=s.ctxPct>=80?"flex":"none";
+    $("lsTodayTok").textContent=fmtK((s.today?.tokIn||0)+(s.today?.tokOut||0));
+    $("lsTodayTurns").textContent=s.today?.turns||0;
+  }catch{}
+}
+refreshSession();
+refreshStack();
+refreshDiag();refreshJobs();
+setInterval(refreshStack,60000);
+setInterval(refreshDiag,5000); setInterval(refreshJobs,60000); setInterval(refreshSession,15000);
 
 /* ====================== holographic media panels ==================== */
 function holoWhoosh(up=true){
@@ -626,6 +637,37 @@ function embedURL(src){
   if(yt) return `https://www.youtube.com/embed/${yt[1]}?autoplay=1`;
   return src;
 }
+/* --- holo panel dragging (grab the top bar) + per-panel position memory --- */
+function loadPos(k){try{return JSON.parse(sessionStorage.getItem("holoPos")||"{}")[k]||null}catch{return null}}
+function savePos(k,x,y){try{const m=JSON.parse(sessionStorage.getItem("holoPos")||"{}");m[k]=[x,y];sessionStorage.setItem("holoPos",JSON.stringify(m))}catch{}}
+function makeDraggable(p,key){
+  const freeze=()=>{const r=p.getBoundingClientRect();
+    p.style.translate="none"; p.style.left=r.left+"px"; p.style.top=r.top+"px";};
+  const saved=loadPos(key);
+  if(saved){ freeze(); p.style.left=saved[0]+"px"; p.style.top=saved[1]+"px";
+    p.classList.remove("pos-left","pos-right","pos-center"); }
+  const bar=p.querySelector(".holoBar"); if(!bar)return;
+  bar.addEventListener("pointerdown",e=>{
+    if(e.target.classList.contains("hx"))return;
+    freeze();
+    const dx=e.clientX-parseFloat(p.style.left), dy=e.clientY-parseFloat(p.style.top);
+    p.classList.add("dragging"); e.preventDefault();
+    const mv=ev=>{
+      let x=ev.clientX-dx, y=ev.clientY-dy;
+      x=Math.max(-p.offsetWidth+140, Math.min(x, innerWidth-140));
+      y=Math.max(0, Math.min(y, innerHeight-bar.offsetHeight-4));
+      p.style.left=x+"px"; p.style.top=y+"px";
+    };
+    const up=()=>{
+      document.removeEventListener("pointermove",mv);
+      document.removeEventListener("pointerup",up);
+      p.classList.remove("dragging");
+      savePos(key, parseFloat(p.style.left)||0, parseFloat(p.style.top)||0);
+    };
+    document.addEventListener("pointermove",mv);
+    document.addEventListener("pointerup",up);
+  });
+}
 let lastSummon={key:"",t:0};
 function summonPanel(opts){
   const o=opts||{};
@@ -635,14 +677,22 @@ function summonPanel(opts){
   if(key===lastSummon.key && Date.now()-lastSummon.t<8000) return null;
   lastSummon={key, t:Date.now()};
   const position=["left","right","center"].includes(o.position)?o.position:"center";
+  const isApp=/^\//.test(src)||/:9119/.test(src);          // internal Hermes route => app panel
+  const appPath=isApp?(src.replace(/^https?:\/\/[^/]+/,"")||"/"):null;
+  const appBare=isApp&&appPath!=="/";                       // bare via /dash proxy; dashboard root keeps its menu
   const p=document.createElement("div");
   p.className="holo pos-"+position; p.dataset.fx="hologram";
+  if(!isApp)p.classList.add("media169");                    // media/web panels: standard 16:9
   let inner="";
   const esrc=encodeURI(src);
   // External pages can't be iframed raw (X-Frame-Options/CSP) — route them through our
   // /api/embed proxy (strips frame-block headers). YouTube keeps its native /embed/ form.
   let fsrc, fallback=src;
-  if(media==="image") inner=`<img class="holoContent" src="${esrc}" alt="">`;
+  if(isApp){
+    fsrc=appBare?("/dash"+appPath):(DASH_PROXY+appPath);
+    inner=`<iframe class="holoContent" src="${fsrc}"></iframe>`;
+  }
+  else if(media==="image") inner=`<img class="holoContent" src="${esrc}" alt="">`;
   else if(media==="video" && !/youtube|youtu\.be/.test(src))
     inner=`<video class="holoContent" src="${esrc}" controls autoplay playsinline></video>`;
   else if(/youtube|youtu\.be/.test(src)) {
@@ -678,7 +728,12 @@ function summonPanel(opts){
     if(e.animationName==="holoApproach") p.classList.add("idle");
     if(e.animationName==="holoDismiss") p.remove();
   });
-  p.querySelector(".hx").onclick=()=>dismissPanel(p);
+  const hxEl=p.querySelector(".hx"); hxEl.onclick=()=>dismissPanel(p);
+  // hide the dashboard menu in bare app panels once their same-origin doc loads
+  const hf=p.querySelector(".holoContent");
+  if(isApp&&appBare&&hf&&hf.tagName==="IFRAME")hf.addEventListener("load",()=>bareify(hf));
+  // draggable from the thin top bar; position remembered per panel key
+  makeDraggable(p, media+"|"+(appPath||src)+"|"+title);
   addActivity("hologram: "+title.toLowerCase());
   return p;
 }
@@ -733,7 +788,7 @@ addEventListener("keydown",e=>{
 });
 bootSequence(new URLSearchParams(location.search).get("boot")==="full");
 
-addMsg("sys","Jarvis HUD online. Click the ring or press Space to talk.");
+addMsg("sys","Lars HUD online. Click the ring or press Space to talk.");
 // Expose the few names that must stay global: the VIEWS inline onclick= handlers
 // need openView, and the voice-HUD bridge needs setState. Everything else stays
 // scoped so app.js (which declares its own `$`, CFG, etc.) never collides.
@@ -759,17 +814,21 @@ window.openView=openView; window.setState=setState;
 (function(){
   const $=id=>document.getElementById(id);
   const LABELS={idle:"L.A.R.S",listening:"LISTENING",thinking:"PROCESSING",speaking:"SPEAKING"};
-  const HINTS={idle:"CLICK RING OR SPACE TO TALK",listening:"I'M LISTENING…",thinking:"THINKING…",speaking:"SPEAKING — MIC ARMED (BARGE-IN)"};
+  const HINTS={idle:"CLICK RING OR SPACE TO TALK",listening:"I'M LISTENING…",thinking:"THINKING…",speaking:"SPEAKING — MIC ARMED (STREAMING)"};
   function applyVoiceUI(prev,next,label,expected){
     // reactor visual owns the colours; map app States onto the HUD STATE_STYLE keys
+    const hint=next==="speaking"?(State.rearm?"SPEAKING — MIC ARMED (STREAMING)":"SPEAKING — STREAMING OFF (TURN-TAKING)"):HINTS[next];
     if(typeof setState==="function"){
       const st={idle:"standby",listening:"listening",thinking:"thinking",speaking:"speaking",error:"error"}[next]||"standby";
-      setState(st, label || LABELS[next] || "L.A.R.S", HINTS[next]);
+      setState(st, label || LABELS[next] || "L.A.R.S", hint);
     }
-    // VOICE LINK panel widgets
+    // VOICE CHAT button glow: green while engaged, red when idle
     const micOn=State.armed && next!=="idle";
+    if($("mic"))$("mic").classList.toggle("on",micOn);
+    // VOICE LINK panel widgets (mic row + level meter owned by app.js)
     if($("micDot")){$("micDot").className="dot "+(micOn?"on":"off");}
-    if($("micState")){$("micState").textContent=next==="speaking"?"speaking (armed)":next;}
+    if(typeof refreshMicStatus==="function")refreshMicStatus(); else if($("micState")){$("micState").textContent=next;}
+    if(typeof meterSync==="function")meterSync();
   }
   State.onChange(applyVoiceUI);
   applyVoiceUI(null,State.current,"",true);
