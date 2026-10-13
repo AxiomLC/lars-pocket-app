@@ -492,7 +492,6 @@ const server = http.createServer(async (req, res) => {
       const out = {
         ok: true, sessionId: larsSessionId, profile: HERMES_PROFILE, model: null,
         turns: 0, tokIn: 0, tokOut: 0, ctxPct: null, cap: null, ttfsMs: lastTtfsMs,
-        today: { turns: 0, tokIn: 0, tokOut: 0 },
       };
       try {
         const token = await discoverHermesToken();
@@ -517,15 +516,6 @@ const server = http.createServer(async (req, res) => {
             const ctx = Math.round((out.tokIn + (mine.cache_read_tokens || 0)) / calls) + Math.round(out.tokOut / calls);
             out.ctxPct = Math.min(100, Math.round(ctx / out.cap * 100));
           }
-        }
-        // Today's totals: only sessions this app starts (title voice-*), same profile.
-        const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
-        const t0 = midnight.getTime() / 1000;
-        for (const s of list) {
-          if ((s.started_at || 0) < t0 || !String(s.title || '').startsWith('voice-')) continue;
-          out.today.turns += Math.ceil((s.message_count || 0) / 2);
-          out.today.tokIn += s.input_tokens || 0;
-          out.today.tokOut += s.output_tokens || 0;
         }
       } catch (e) { out.ok = false; out.error = String(e.message || e); }
       return sendJson(res, 200, out);

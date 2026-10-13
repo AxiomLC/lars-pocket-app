@@ -66,6 +66,7 @@ const run = {
   spokenText: '',     // everything we've handed to TTS this turn (used by the echo filter)
   lastSpeechEnd: 0,   // performance.now() when playback last finished
   speakingStart: 0,   // performance.now() when audio actually became audible
+  pushTalk: false,    // an open Orb push-to-talk session (turnabout mode) is collecting words
 };
 
 const stt = {
@@ -91,7 +92,7 @@ const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRec
 const $ = sel => document.querySelector(sel);
 const el = {
   chat: $('#chat'), log: $('#log'), specs: $('#specs'), status: $('#status'), interim: $('#interim'),
-  mic: $('#mic'), rearm: $('#rearm'), kbd: $('#kbd'), stop: $('#stop'), echo: $('#echo'), clear: $('#clear'),
+  mic: $('#mic'), rearm: $('#rearm'), micSw: $('#micSw'), kbd: $('#kbd'), stop: $('#stop'), echo: $('#echo'), clear: $('#clear'),
   typed: $('#typed'), txt: $('#txt'), send: $('#send'),
 };
 
@@ -485,17 +486,17 @@ async function sendToLLM(userText) {
     run.speakingStart = performance.now();
     State.set('speaking');
     log(`TTFA (send → first audio): ${elapsed(tSend)} ms`, 'ok');
-    if (State.rearm) { log('Mic re-armed (barge-in active)'); State.armed = true; startListening(); }
+    if (State.rearm && canListen()) { log('Mic re-armed (barge-in active)'); startListening(); }
   };
   speaker.onDone = () => {
     if (stale()) return;
     run.lastSpeechEnd = performance.now();
     log('Playback done');
-    // Voice still armed -> back to listening AND actually reopen the mic. With
-    // barge OFF the mic was never re-armed during playback, so without this the
-    // turn ended 'idle' with armed stuck true: lamp went red and the next Orb
-    // press fell into the turn-OFF branch (voice dead until reload).
-    if (State.armed) { State.set('listening'); if (!stt.running) startListening(); }
+    // STREAMING on + chain clear → stay live for the next turn/barge.
+    // Turnabout → back to REST: armed stays true, the Orb says "click ring to speak"
+    // (with streaming off the mic must NOT reopen here — that was the old bug where
+    //  the turn ended 'listening' forever).
+    if (State.rearm && canListen()) { State.set('listening'); if (!stt.running) startListening(); }
     else State.set('idle');
   };
 
@@ -560,8 +561,8 @@ async function sendToLLM(userText) {
     bubble.remove();
     log(`Chat error: ${e.message}`, 'err');
     addBubble('a', `Error: ${e.message}`, 'i');
-    State.set(State.armed ? 'listening' : 'idle');
-    if (State.armed && !stt.running) startListening();      // barge OFF must not orphan a green lamp with no mic
+    if (State.rearm && canListen()) { State.set('listening'); if (!stt.running) startListening(); }
+    else State.set('idle');
   }
 }
 
@@ -570,13 +571,30 @@ async function sendToLLM(userText) {
    9. LISTENING (STT) — Web Speech recognizer, silence timer, barge-in
    ===================================================================== */
 
-/** Start a recognizer session (restarts itself on end while State.armed is true). */
+/** Start a recognizer session (restarts itself on end while the priority chain
+    says listening must be live — see canListen() above). */
+/* =====================================================================
+   THE VOICE PRIORITY CHAIN (read this first)
+   --------------------------------------------------------------
+   1. STOP        State.stopped    TOP-DOG toggle — kills LLM + typed chat + voice
+   2. MASTER MIC  State.micMuted   hard cut of listening; independent of the rest
+   3. STREAMING   State.rearm      voice chat + barge-in (requires voice chat on)
+   4. VOICE CHAT  State.armed      turnabout — click the Orb to speak
+   --------------------------------------------------------------
+   May the app be listening AT ALL? This is THE single gate: every path that
+   opens the recognizer, restarts it, or re-arms it after a reply goes through
+   here. Nothing else decides.
+   ===================================================================== */
+function canListen() {
+  return State.armed && !State.micMuted && !State.stopped && !State.testMode;
+}
+
 async function startListening() {
-  if (!SpeechRecognitionCtor || stt.running || stt.starting) return;
+  if (!SpeechRecognitionCtor || stt.running || stt.starting || !canListen()) return;
   stt.starting = true;
   if (!stt.mic) await ensureMic();
   stt.starting = false;
-  if (stt.running || !State.armed) return;
+  if (stt.running || !canListen()) return;
 
   const rec = new SpeechRecognitionCtor();
   stt.rec = rec;
@@ -596,14 +614,18 @@ async function startListening() {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       State.armed = false;
       State.set('idle', 'Mic blocked');
+      syncVoiceButtons();
     }
   };
   rec.onend = () => {
     stt.running = false;
     try { stt.track && stt.track.stop(); } catch {}
     stt.track = null;
-    // Chrome ends sessions on its own after silence — restart while the user wants the mic open
-    if (State.armed && !State.is('thinking')) setTimeout(startListening, 150);
+    // Chrome ends sessions on its own after silence — restart ONLY when the
+    // chain says listening must be live right now:
+    //   STREAMING: live continuously (incl. mid-reply for barge-in)
+    //   turnabout: only while an open Orb talk session exists (State 'listening')
+    if (canListen() && !State.is('thinking') && (State.rearm || State.is('listening'))) setTimeout(startListening, 150);
     else if (!State.armed && State.is('listening')) State.set('idle');
   };
 
@@ -655,8 +677,11 @@ async function startListening() {
   }
 }
 
-function stopListening() {
-  State.armed = false;
+/* stopListening(keepArmed): close the recognizer. By default this also drops
+   VOICE CHAT (armed=false). Pass true when an outer gate (MASTER MIC, STREAMING
+   off, MIC TEST) is doing the cutting and voice chat must keep its state. */
+function stopListening(keepArmed) {
+  if (!keepArmed) State.armed = false;
   clearTimeout(stt.silenceTimer);
   try { stt.rec && stt.rec.abort(); } catch {}
   stt.running = false;
@@ -666,6 +691,7 @@ function stopListening() {
 function commitUtterance() {
   const text = (stt.buf + ' ' + stt.interim).trim();
   stt.buf = ''; stt.interim = ''; el.interim.textContent = '';
+  run.pushTalk = false;              // the Orb talk session ends either way (sent or empty)
   if (!text) return;
   log(`Silence ${CFG.SILENCE_MS} ms → sending: "${text.slice(0, 60)}"`);
   try { stt.rec && stt.rec.abort(); } catch {}   // mic closed while thinking; re-armed on first audio
@@ -675,21 +701,26 @@ function commitUtterance() {
 
 
 /* =====================================================================
-   10. CONTROLS
+   10. CONTROLS — THE VOICE PRIORITY CHAIN, top → bottom
+       STOP (top-dog) → MASTER MIC → STREAMING → VOICE CHAT
+       The Orb/Space is VISUAL + push-to-talk only — it never flips a flag.
    ===================================================================== */
 
-/* ---- 10a. Mic button: start talking / stop everything ---- */
-/* ========================= control coupling + widgets ========================= */
-/* VOICE CHAT (State.armed) is the master switch; STREAMING only exists while
-   voice chat is on; STOP's badge is red only when everything is idle. */
+/* ---- 10a. Glows & labels mirror the chain exactly ---- */
 function syncVoiceButtons() {
-  if (!State.armed && State.rearm) State.rearm = false;              // voice chat OFF => streaming OFF
+  if (!State.armed && State.rearm) State.rearm = false;              // VOICE CHAT off => STREAMING off
   if (el.rearm) {
     el.rearm.classList.toggle('on', State.rearm);
-    el.rearm.textContent = `STREAMING: ${State.rearm ? 'ON' : 'OFF'}`;
+    el.rearm.textContent = 'STREAMING';                        // glow = ON/OFF (label text per spec)
+    el.rearm.title = `STREAMING now ${State.rearm ? 'ON' : 'OFF'} — needs VOICE CHAT on. ` +
+      (State.rearm ? 'Mic stays live through Lars\'s reply (barge-in allowed).' : 'Turn-taking only — mic closes while Lars talks.');
   }
-  if (el.stop) el.stop.classList.toggle('stopped', !State.armed && State.is('idle'));   // red only when everything is stopped
-  if (el.mic) el.mic.classList.toggle('on', State.armed && !State.is('idle'));
+  if (el.stop) el.stop.classList.toggle('stopped', State.stopped);   // red ONLY while STOP engaged
+  if (el.mic) el.mic.classList.toggle('on', State.armed);            // green = voice chat on
+  if (el.micSw) {                                                    // MASTER MIC gate
+    el.micSw.classList.toggle('on', !State.micMuted);
+    el.micSw.textContent = State.micMuted ? 'MIC: OFF' : 'MIC: ON';
+  }
 }
 
 /* ---- input level meter: real mic dB via AnalyserNode (canonical MDN RMS loop).
@@ -702,7 +733,8 @@ function drawLevel(db) {
 }
 function meterSync() {
   const track = stt.mic && stt.mic.getAudioTracks && stt.mic.getAudioTracks()[0];
-  if (track && track.readyState === 'live' && (State.armed || State.testMode)) meterStart();
+  // MIC gate off = circuit cut → bar rests even if a stale stream still reports live
+  if (track && track.readyState === 'live' && !State.micMuted && (State.armed || State.testMode)) meterStart();
   else meterStop();
 }
 function meterStart() {
@@ -736,6 +768,8 @@ function meterTick() {
 async function refreshMicStatus() {
   const txt = document.getElementById('micState'), dot = document.getElementById('micDot');
   if (!txt) return;
+  // MIC gate is OFF → circuit cut: chip reports the gate, not the hardware
+  if (State.micMuted) { txt.textContent = 'MIC OFF'; if (dot) dot.className = 'dot off'; return; }
   const track = stt.mic && stt.mic.getAudioTracks && stt.mic.getAudioTracks()[0];
   const live = !!(track && track.readyState === 'live');
   if (live && State.armed) { txt.textContent = 'live'; if (dot) dot.className = 'dot on'; return; }
@@ -756,39 +790,112 @@ function setEchoStatus(msg, ok) {
   s.className = ok === true ? 'ok' : ok === false ? 'err' : '';
 }
 
+/* ---- 10b. VOICE CHAT (rank 4 — turnabout master switch) ----
+   ON:  arms voice chat; the mic stays CLOSED until the Orb is clicked
+        (push-to-talk). STREAMING is OFF — barge-in is an explicit opt-in.
+   OFF: cuts listening ONLY. Lars's running reply and typed chat are untouched. */
 el.mic.onclick = () => {
-  getAudioCtx();                                  // unlock audio inside the user gesture
-  if (State.armed || State.is('listening')) {      // VOICE CHAT off: mic ONLY — never touches Lars's
-    stopListening();                               // running reply (no cancelEverything: it finishes)
-    log('Voice chat OFF (mic only — Lars keeps talking)');
+  getAudioCtx();                                  // unlock audio in the user gesture
+  if (State.stopped) { log('STOP engaged — press STOP to release first', 'warn'); syncVoiceButtons(); return; }
+  if (State.armed) {
+    stopListening();                              // armed=false, mic closes; reply keeps playing
+    run.pushTalk = false;
     if (State.is('listening')) State.set('idle');
-    syncVoiceButtons();
-    return;
+    log('Voice chat OFF (Lars keeps talking)');
+  } else {
+    State.armed = true;                           // STREAMING stays OFF (sync forces it when voice was off)
+    stt.buf = ''; stt.interim = '';
+    log('Voice chat ON — click the ring to speak');
   }
-  State.armed = true; State.rearm = true;         // VOICE CHAT on => streaming on, STOP back to normal
-  stt.buf = ''; stt.interim = '';
-  log('Voice chat ON');
-  startListening();
   syncVoiceButtons();
 };
 
-/* ---- 10b. Stop — kills Lars's action AND all voice chat (VOICE CHAT re-arms) ---- */
+/* ---- 10c. STOP (rank 1 — TOP-DOG toggle) ----
+   ENGAGED: kill the in-flight LLM run + block typed chat; VOICE CHAT &
+            STREAMING off; STOP glows red; the Orb goes dead.
+   RELEASE: STOP back to normal, typed chat works immediately. Voice chat and
+            STREAMING stay OFF until each is pressed on again (no auto-resume). */
 el.stop.onclick = () => {
-  stopListening(); cancelEverything('stop button'); State.set('idle');
-  State.rearm = false;
-  log('STOP — Lars stopped + voice chat + streaming off', 'warn');
+  if (!State.stopped) {
+    State.stopped = true;
+    stopListening();                              // also forces VOICE CHAT off (armed=false)
+    cancelEverything('stop button');              // abort in-flight LLM/TTS (history is kept)
+    State.rearm = false;
+    run.pushTalk = false;
+    State.set('idle');
+    log('STOP engaged — LLM, typed chat and voice are paused. Press STOP to release.', 'warn');
+  } else {
+    State.stopped = false;
+    log('STOP released — voice chat & streaming OFF; enable as wanted', 'ok');
+  }
   syncVoiceButtons();
 };
 
-/* ---- 10c. Streaming toggle (only meaningful while VOICE CHAT is on) ---- */
+/* ---- 10d. STREAMING (rank 3 — voice chat + barge-in) ----
+   Only meaningful while VOICE CHAT is ON. ON = mic live immediately and through
+   Lars's reply (barge-in). OFF = mic only opens for Orb talk sessions; an
+   open streaming session drops back to rest — an in-progress push-to-talk
+   session is left alone so you can still send it. */
 el.rearm.onclick = () => {
+  if (State.stopped) { log('STOP engaged — press STOP to release first', 'warn'); return; }
   if (!State.armed) { log('Streaming needs VOICE CHAT on', 'warn'); return; }
   State.rearm = !State.rearm;
   log(`Streaming ${State.rearm ? 'ON' : 'OFF'}`, 'warn');
+  if (State.rearm) {
+    if (canListen() && !State.is('thinking')) startListening();    // live at once (thinking waits for first audio)
+  } else if (State.is('speaking') || (State.is('listening') && !run.pushTalk)) {
+    stopListening(true);                          // barge listening cut; VOICE CHAT state untouched
+    if (State.is('listening')) State.set('idle');
+  }
   syncVoiceButtons();
 };
 
-/* ---- 10d. Keyboard input ---- */
+/* ---- 10e. MASTER MIC (rank 2 — brand-new wiring, independent gate) ----
+   Cuts LISTENING only — voice chat/streaming keep their glows & state.
+   MIC OFF also kills the hardware stream (a real mic-off). MIC ON is the ONLY
+   way hearing comes back; nothing else can unmute it, by design. */
+if (el.micSw) el.micSw.onclick = () => {
+  State.micMuted = !State.micMuted;
+  if (State.micMuted) {
+    stopListening(true);                          // MIC gate is its own thing — keep VOICE CHAT armed
+    stt.buf = ''; stt.interim = ''; if (el.interim) el.interim.textContent = '';
+    run.pushTalk = false;
+    if (State.is('listening')) State.set('idle');
+    try { (stt.mic?.getTracks() || []).forEach(t => t.stop()); } catch {}   // kill the hardware stream
+    setEchoStatus('MIC OFF', false);                             // MIC TEST chip reflects the gate
+    log('MIC OFF — app hears nothing (Lars unaffected)');
+  } else {
+    setEchoStatus('—');                                          // gate open again — test chip reset
+    log('MIC ON', 'ok');
+    if (State.rearm && canListen() && !State.is('thinking')) startListening();   // streaming → live at once
+    // turnabout mode: mic stays closed until the Orb is clicked
+  }
+  refreshMicStatus(); meterSync(); syncVoiceButtons();
+};
+
+/* ---- 10f. ORB / SPACE — visual + push-to-talk ONLY ----
+   The Orb never flips voice, streaming, mic or STOP. Its one job lives in
+   turnabout mode (VOICE CHAT on, STREAMING off, MIC on, STOP released):
+     click at rest → open the mic, start collecting speech
+     click talking → finish & send now (2 s silence timeout also sends)
+   Every other configuration = dead click; the ring label says why. */
+function orbPress() {
+  getAudioCtx();
+  if (State.stopped || State.micMuted || !State.armed) return;      // dead — visual only
+  if (State.rearm) return;                                          // streaming: mic already live
+  if (State.current === 'listening') { commitUtterance(); return; } // second click = send now
+  if (State.current === 'idle') {                                   // first click = talk
+    run.pushTalk = true;
+    stt.buf = ''; stt.interim = '';
+    startListening();
+  }
+  // thinking / speaking in turnabout: ring waits for the reply to end
+}
+addEventListener('keydown', e => {
+  if (e.code === 'Space' && document.activeElement !== el.txt) { e.preventDefault(); orbPress(); }
+});
+
+/* ---- 10g. Keyboard input ---- */
 el.kbd.onclick = () => {
   const show = el.typed.style.display !== 'flex';
   el.typed.style.display = show ? 'flex' : 'none';
@@ -796,6 +903,7 @@ el.kbd.onclick = () => {
   if (show) el.txt.focus();
 };
 function sendTyped() {
+  if (State.stopped) { log('STOP engaged — press STOP to release chat', 'warn'); return; }
   const text = el.txt.value.trim();
   if (!text) return;
   el.txt.value = '';
@@ -805,16 +913,19 @@ function sendTyped() {
 el.send.onclick = sendTyped;
 el.txt.onkeydown = e => { if (e.key === 'Enter') sendTyped(); };
 
-/* ---- 10e. Clear chat (only on the legacy page — HUD has no CLR button) ---- */
+/* ---- 10h. Clear chat (only on the legacy page — HUD has no CLR button) ---- */
 if (el.clear) el.clear.onclick = () => { el.chat.innerHTML = ''; run.history = []; log('Chat cleared'); };
 
-/* ---- 10f. MIC TEST — one press tests both: rising tone on the speakers (confirm
+/* ---- 10i. MIC TEST — one press tests both: rising tone on the speakers (confirm
    by ear) + 1.6 s of REAL mic input (level bar animates live) → verdict chip:
    MIC + SPK OK / NO MIC INPUT. No speech playback, no hidden echo analysis. ---- */
 el.echo.onclick = async () => {
-  getAudioCtx(); stopListening(); cancelEverything('mic test');
-  State.testMode = true; State.rearm = false; State.set('idle', 'Mic test'); syncVoiceButtons();
-  if (!await ensureMic()) { State.testMode = false; meterSync(); setEchoStatus('MIC BLOCKED', false); return; }
+  // MIC gate OFF = circuit cut: the test cannot run (MIC on/off rules mic status,
+  // the input-level bar AND this test — it never implicitly unmutes anything)
+  if (State.micMuted) { setEchoStatus('MIC OFF', false); log('MIC TEST ignored — MIC gate is OFF', 'warn'); return; }
+  getAudioCtx(); stopListening(true); cancelEverything('mic test');  // a hardware test must NOT flip voice chat off
+  State.testMode = true; State.set('idle', 'Mic test'); syncVoiceButtons();
+  if (!await ensureMic()) { State.testMode = false; State.set('idle'); meterSync(); setEchoStatus('MIC BLOCKED', false); return; }
 
   // 1) speakers: short rising tone — user confirms audibly
   try {
@@ -837,13 +948,18 @@ el.echo.onclick = async () => {
   await new Promise(r => setTimeout(r, 1600));
   const peak = meterPeak;
   State.testMode = false; meterSync();           // bar rests unless voice is armed
+  // Restore the truth: streaming ON must actually resume listening after the
+  // test (turnabout just goes back to rest, ring says "click to speak").
+  if (State.rearm && canListen() && !State.is('thinking')) startListening();
+  State.set('idle');
 
   // 3) verdict on the chip
   const micOk = peak > -45;
   setEchoStatus(micOk ? 'MIC + SPK OK' : 'NO MIC INPUT', micOk);
   log(`Mic test: peak ${peak.toFixed(0)} dB → ${micOk ? 'input OK' : 'no mic input from mic'}`, micOk ? 'ok' : 'err');
+  if (State.micMuted) { try { (stt.mic?.getTracks() || []).forEach(t => t.stop()); } catch {} }   // MASTER MIC stays cut
   refreshMicStatus();
 };
 
 log('App ready', 'ok');
-refreshMicStatus(); meterSync();
+syncVoiceButtons(); refreshMicStatus(); meterSync();

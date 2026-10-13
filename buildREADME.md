@@ -34,12 +34,13 @@ A single-node (no-dependency `node:http`) web app on **`http://localhost:1122`**
 - **STT** — in-browser (Web Speech API). No server.
 - **Brain** — Hermes via the **`:9119` JSON-RPC/WebSocket gateway** (`/api/ws`), default `BRAIN=hermes`.
 - **TTS** — Pocket TTS on `:1133` (uvx), served through our `/api/tts` proxy. Built-in `alba` voice.
-- **Voice UX** — armed mic (on/off), **re-arm toggle**, **barge-in**, sentence-chunked streaming
-  playback, and a typing box. Now sits on the **HUD** (`/hud/`), driven by the same `state.js` +
-  `app.js` that ran the old UI (byte-identical voice engine).
+- **Voice UX** — the four-control **priority chain**: **STOP → MASTER MIC → STREAMING →
+  VOICE CHAT**, with the Orb/Space as push-to-talk, barge-in, sentence-chunked streaming
+  playback and a typing box. Same `state.js` + `app.js` engine; full function map + flows in
+  **§6C**.
 
 ```
-Chrome (armed mic, barge-in)
+Chrome (Web Speech STT; ring = push-to-talk; barge-in when STREAMING on)
   │  Web Speech STT → transcript
   ▼
 [ lars-pocket-app ]  POST /api/chat (OpenAI-SSE)
@@ -115,8 +116,8 @@ engine from. Verified as of the beta `6fe468c`:
 ### To run & verify
 1. Hermes is up and `:9119` live (app auto-discovers token + connects).
 2. `start.bat` (or: `uvx pocket-tts serve --port 1133` + `npm start`) → `http://localhost:1122`.
-3. **HUD (primary):** open `http://localhost:1122/hud/` — click the ring / ENGAGE VOICE,
-   speak, barge in over Lars. Typed chat box also feeds the same brain.
+3. **HUD (primary):** open `http://localhost:1122/hud/` — click **VOICE CHAT**, then the ring /
+   Space to talk; **STREAMING** on = barge in over Lars. Typed chat box feeds the same brain.
 4. **Old voice page (fallback):** open `http://localhost:1122/` (unchanged baseline).
 
 ---
@@ -162,17 +163,17 @@ Source: `C:\Users\Admin\lars13\server\hud\index.html` (single 885-line static fi
    `profiles\lars\config.yaml` → `plugins.enabled`, **not** the global scope — see §6A. No
    `hermes tools enable hud` is needed (plugin toolsets auto-enable; `hud` is not default-off).
 
-### Sub-phase 3B — voice grafted onto the HUD ✅ DONE
-5. **Done:** the working voice state machine (armed mic on/off, **re-arm button**, barge-in,
-   sentence-chunked playback, Pocket TTS) is now in `/hud/`. We load **`state.js` + `app.js`
-   verbatim** (the exact engine from the old UI) rather than porting/rewriting — zero regression
-   risk. `app.js` binds `#mic`/`#rearm`/`#stop`/`#echo`/`#send`/`#clear`/`#txt` and posts `.m`
-   bubbles into `#chat` on the HUD.
-6. **Controls:** orb/ring + Space = mic toggle (same as `#mic`); **re-arm button** sits in the
-   chat row next to SEND/CLR; the HUD's reactor ring follows the `State` machine (idle ring
-   label = **L.A.R.S**). Note: the HUD inline script is wrapped in an IIFE so its `const $`
-   doesn't collide with `app.js`'s `$` (that was the old "Identifier already declared" error);
-   only `openView` + `setState` are exposed as globals.
+### Sub-phase 3B — voice grafted onto the HUD ✅ DONE (controls now = the priority chain, §6C)
+5. **Done:** the voice state machine (STT, barge-in, sentence-chunked playback, Pocket TTS) lives
+   in `/hud/` — **`state.js` + `app.js` loaded directly** (not re-ported), so the engine is the
+   same file-in-file as the legacy page. `app.js` binds `#mic`/`#rearm`/`#micSw`/`#stop`/`#echo`/
+   `#send`/`#txt` and posts `.m` bubbles into `#chat` on the HUD.
+6. **Controls:** the VOICE LINK panel holds the chain buttons (VOICE CHAT / STREAMING + the MIC
+   gate row), **STOP** sits in the chat row next to SEND, and the Orb/Space is push-to-talk only
+   (`orbPress()`). The reactor follows `State` (resting ring label = **L.A.R.S**). Full function
+   map + flows = **§6C**. HUD inline scripts are IIFEs (their `$` must not collide with `app.js`'s
+   `$` — that was the old "Identifier already declared" error); only `openView` + `setState` are
+   exposed as globals.
 
 ### Sub-phase 3C — side panels (data policy)
 7. The left/right panels (Models Loadout, Voice Link, Turn Metrics, Diagnostics, Machines,
@@ -288,6 +289,98 @@ filtered narration still completes on `message.complete` (no SSE hang).
 
 ---
 
+## 6C. VOICE SYSTEM reference — priority chain, function map & flows
+
+Design intent, function names and call flow of the voice leg. Written so an AI setting this
+repo up for a new environment (fork) can trace any behavior from here without reading all
+of `app.js` first.
+
+### The chain (top wins) + state flags
+
+| Rank | Control (button) | `state.js` flag | Meaning |
+|---|---|---|---|
+| 1 | **STOP** `#stop` | `stopped` | Top dog. Engaged: in-flight LLM + typed chat killed, VOICE CHAT/STREAMING forced off, ring dead, STOP glows red. Press again to release (no auto-resume of voice) |
+| 2 | **MIC: ON/OFF** `#micSw` | `micMuted` | Hard cut of the mic circuit: `Microphone` chip, input-level bar and **MIC TEST** all go dead when OFF; hardware stream stopped. MIC ON is the only way back |
+| 3 | **STREAMING** `#rearm` | `rearm` | Needs VOICE CHAT on. Mic live immediately and through Lars's reply → barge-in. Glow = state (no ON/OFF text; hover title carries the state) |
+| 4 | **VOICE CHAT** `#mic` | `armed` | Turnabout: ring/Space = push-to-talk. OFF cuts listening only — never the running reply or typed chat |
+| — | **MIC TEST** `#echo` | `testMode` | Hardware tone + 1.6 s RMS peak → verdict chip; suppressed by `micMuted` |
+
+Rules enforced in `syncVoiceButtons()`: voice OFF ⇒ streaming OFF; streaming can't exist
+without voice; STOP presides over both. Load defaults: `stopped=false, micMuted=false,
+armed=false, rearm=false` (user must click VOICE CHAT = first Google-STT gesture).
+
+Machine states (state.js `ALLOWED` map): `idle → listening → thinking → speaking` + any → idle.
+
+### The single listening gate
+
+```js
+canListen() = armed && !micMuted && !stopped && !testMode     // app.js
+```
+Every path that opens/reopens the recognizer goes through it: `startListening()` entry,
+its Chrome auto-restart in `rec.onend`, the post-reply re-arm (`speaker.onDone`), and the
+`sendToLLM` error path. Don't sprinkle ad-hoc `State.armed` checks — extend the gate.
+
+### Function map — engine (`public/app.js`)
+
+| Function | Role |
+|---|---|
+| `syncVoiceButtons()` | Single renderer for all 4 buttons' glow/label/title; enforces the voice⇒streaming cascade. Call after ANY flag change |
+| `orbPress()` | Orb + Space (bound ONCE in app.js): visual + push-to-talk. Dead if stopped/micMuted/!armed or streaming; `listening` → `commitUtterance()`; `idle` → push-talk session + `startListening()` |
+| `startListening()` / `stopListening(keepArmed)` | Recognizer open / close. Outer gates pass `keepArmed=true` so voice-chat state survives mic cuts, streaming-off and MIC TEST |
+| `commitUtterance()` | 2 s silence timeout or 2nd ring click → `sendToLLM`; resets `run.pushTalk` |
+| `sendToLLM()` hooks | `speaker.onFirstAudio`: streaming ⇒ re-arm for barge; `speaker.onDone`: streaming⇒`listening` else `idle` (rest, ring prompt); error path mirrors `onDone` |
+| `refreshMicStatus()` / `meterSync()` | VOICE LINK `Microphone` chip + input-level bar — both hard-gated by `micMuted` |
+| `setEchoStatus(msg, ok)` | MIC TEST verdict chip (displays `MIC OFF` while the gate is cut) |
+| `sendTyped()` | typing box → `sendToLLM`; refused while `stopped` |
+| `echoVerdict()` / `cleanSpokenText()` | barge-in echo filter; strips tool-call narration from spoken deltas |
+| `state.js` `State` | flags + machine; subscribers via `State.onChange` |
+
+### Function map — HUD (`public/hud/index.html`, inline IIFE scripts)
+
+- `voiceHint(st)` → ring hint text (`CHAT SESSION STOPPED` / `VOICE CHAT OFF` /
+  `CLICK RING TO SPEAK` / `LISTENING — CLICK RING TO SEND` / `I'M LISTENING…`) — centered;
+  MIC-off gets NO special label (the red MIC button is the indicator).
+- `applyVoiceUI` = `State.onChange` subscriber → reactor `setState()` style + hint + refreshes.
+- `#reactorWrap.onclick` → global `orbPress()`. **Do not bind Space here** — it lives in app.js.
+- `bareify()` / `openView()` / `summonPanel()` — VIEWS + Holo machinery (unchanged, §6/§6B).
+
+### Flow A — turnabout (STREAMING off)
+`idle` → ring/Space click (`pushTalk=true`, `startListening`) → `listening` (2 s silence auto-
+sends) → ring click again = send now → `commitUtterance` → `thinking` → first audio →
+`speaking` (mic CLOSED, no barge) → `onDone` → `idle` (`CLICK RING TO SPEAK`). Toggling
+VOICE CHAT off at any step never touches the in-flight reply.
+
+### Flow B — streaming (STREAMING on)
+Toggle ⇒ `startListening()` immediately; mic stays live across thinking→speaking; speech
+during playback passes `echoVerdict()` then barge-in (`cancelEverything('barge-in')` →
+`listening`). `onDone` re-arms: ring reads `I'M LISTENING…`.
+
+### Flow C — MIC gate (cuts the whole circuit)
+OFF: `stopListening(true)` + buf cleared + hardware tracks stopped + chip `MIC OFF` + bar
+forced to rest + MIC TEST refused (chip `MIC OFF`). Glows/flags of voice/streaming untouched.
+ON: STREAMING mode reopens the mic at once; turnabout waits for the ring.
+
+### Flow D — STOP (top dog)
+Press 1: `stopped=true`, stop listening, `cancelEverything` (history kept), streaming off,
+SEND blocked, STOP red. Press 2: `stopped=false` → typed chat live immediately; VOICE CHAT
+and STREAMING must each be switched back on manually.
+
+### Fork-setup notes for an installer (new environment)
+- **Env** (`.env` is gitignored; ship `.env.example`): `PORT`, `BRAIN`, `HERMES_PROFILE`,
+  `POCKET_URL`/`POCKET_VOICE`, `HERMES_WS_ORIGIN` (fallback override), Cerebras trio
+  (`CEREBRAS_API_KEY/MODEL/URL`) for the second leg.
+- **Hermes preconditions:** `:9119` dashboard/serve up (token auto-discovered — §3),
+  `hud_display` plugin in the PROFILE home + enabled (§6A), `TAVILY_API_KEY` for web search.
+- **Voice preconditions:** `uvx pocket-tts serve --port 1133`; Chrome-class browser (Web Speech
+  API + `rec.start(processedTrack)` echo cancellation).
+- **Don't touch:** `lars-pocket-tts` / `lars13` (read-only references); Space binding (app.js);
+  change button sizes via `.btn.sm` / `.btn.tgl` / `.btn.tgl.xs` in the HUD `<style>`.
+- **Validate before shipping:** `node --check` on `server.js` + `public/app.js` + `state.js` and
+  on each extracted inline `<script>` of `public/hud/index.html`, then eyeball the 4 controls,
+  ring push-to-talk, barge-in and the MIC circuit (§6C Flows A–D).
+
+---
+
 ## 7. Commands
 
 ```cmd
@@ -323,10 +416,18 @@ curl http://127.0.0.1:9119/           # hermes gateway (token auto-discover)
 **UI build (Phase 3):**
 - [x] 3A — HUD shell served at `/hud/`; VIEWS iframes point at `:9119` (no frame-block — verified); SSE summon channel (`/events` + `/api/summon`) + `hud_display` plugin brought in & adapted
 - [x] 3A deploy — `hud_display` plugin **deployed into the `lars` profile scope** (`profiles\lars\plugins\hud_display\`) + enabled in `profiles\lars\config.yaml` `plugins.enabled`; `hud` toolset auto-enables (no `hermes tools enable` needed). Profile-setup steps documented in §6A.
-- [x] 3B — **voice grafted onto the HUD** (`/hud/` loads `state.js` + `app.js` verbatim): armed mic, re-arm button (chat row, next to SEND/CLR), barge-in, Pocket playback all work; orb/ring + Space = mic; idle ring label = **L.A.R.S**
+- [x] 3B — **voice grafted onto the HUD** (`/hud/` loads `state.js` + `app.js` directly): STT, barge-in, Pocket playback live; controls later rewritten as the priority chain (§6C); resting ring label = **L.A.R.S**
 - [x] 3B test — voice round-trip + barge-in confirmed live in `/hud/`
 - [x] 3B-HUD fixes (Beta v1.5) — external pages/videos render via `/api/embed` proxy; Lars's tool-call thoughts no longer spoken (see §6B)
 - [ ] 3C — side panels: `:9119` RPC stats + local psutil + token tally (placeholders first)
+
+**Voice controls v2 — priority chain (§6C) — built, pending eyeball test:**
+- [x] Chain rewrite: STOP > MASTER MIC > STREAMING > VOICE CHAT; Orb/Space = push-to-talk only
+- [x] MIC gate wired through the Microphone chip, input-level bar and MIC TEST circuit (§6C Flow C)
+- [x] Panel trims: `Tokens today` / `Turns today` rows + their `server.js` tally; DIAGNOSTICS `Refreshed` row
+- [x] Cosmetics: plain `STREAMING` label (glow = state, dynamic hover title), matched button
+      fonts/sizes, ring hints shortened + centered
+- [ ] User eyeball test → then verify & commit
 
 **Later:**
 - [ ] Phase 4 — Cerebras direct-LLM live key + latency A/B (drop-in, no UI change)
@@ -353,3 +454,6 @@ curl http://127.0.0.1:9119/           # hermes gateway (token auto-discover)
 - **Filter spoken deltas** — Lars's tool narration/JSON/HTML in `message.delta` `payload.text` is not meant
   to be heard; `cleanSpokenText()` strips it before TTS. A `sawRaw` counter prevents an all-filtered turn
   from hanging on `message.complete`.
+- **One listening gate** — `canListen()` in `app.js` decides every recognizer open/restart; the voice
+  chain's golden rule. Space is bound **exactly once** (app.js); the HUD ring calls the global
+  `orbPress()` — never rebind Space inside the HUD scripts (double-fire = instant accidental sends).

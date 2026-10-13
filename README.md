@@ -4,7 +4,8 @@ A **two-way voice assistant for Lars** — an always-on, streaming-voice chat th
 Hermes `lars` profile and can drive an on-screen **HUD / Holo Panels** (web pages, YouTube videos,
 images) by voice command. Built on top of a proven **semi-streaming voice + barge-in** chassis.
 
-> **Beta v1.5** — working streaming voice to Hermes Lars, with a HUD-enabled UI (Holo Panels).
+> **Beta v1.8** — streaming voice to Hermes Lars with priority-chain voice controls
+> (STOP / MIC / STREAMING / VOICE CHAT) and a HUD-enabled UI (Holo Panels).
 
 ---
 
@@ -18,6 +19,16 @@ Lars also controls a full-screen **HUD** at `/hud/`:
 - **Holo Panels** — floating panels Lars summons by voice to show a web page, a YouTube video, an
   image, or the Hermes dashboard/kanban on screen.
 - **VIEWS** — quick-jump iframes (KANBAN / HERMES DASHBOARD / CHAT) from the Hermes `:9119` server.
+
+**Voice controls — a top-down priority chain (top wins):**
+
+| Control | What it does |
+|---|---|
+| **STOP** | Top dog: kills the running reply + typed chat, turns voice off; glows red; press again to release |
+| **MIC: ON/OFF** | Hard mic cut — status chip, input level and MIC TEST all go dead when OFF; MIC ON is the only way back |
+| **STREAMING** | Mic stays live during Lars's reply → talk over him (barge-in); needs VOICE CHAT on |
+| **VOICE CHAT** | Turnabout mode: click the ring (or Space) to talk, click again or wait 2 s to send |
+| **Ring / Space** | Visual + push-to-talk only — never flips a switch itself |
 
 ---
 
@@ -34,11 +45,11 @@ Lars also controls a full-screen **HUD** at `/hud/`:
   scaffold is wired (same SSE shape) for an A/B latency path.
 - **TTS (Lars→you):** **Pocket TTS** on `:1133`, streamed through our `/api/tts` proxy as chunked WAV,
   played gapless with **Web Audio**.
-- **Voice UX:** armed mic (on/off), **re-arm button**, **barge-in**, sentence-chunked playback, typed
+- **Voice UX:** the four-control priority chain above, sentence-chunked playback, typed
   chat. Zero external runtime dependencies (`node:http` only).
 
 ```
-Chrome (armed mic, barge-in, re-arm)
+Chrome (Web Speech STT; ring = push-to-talk; barge-in when STREAMING on)
   │  Web Speech STT → transcript
   ▼
 [ lars-pocket-app :1122 ]  POST /api/chat (OpenAI-SSE)
@@ -57,8 +68,8 @@ This project reuses two things:
 
 1. **The voice chassis — `AxiomLC/lars-pocket-tts`** (`C:\Users\Admin\lars-pocket-tts`, **read-only**).
    That repo proved the **semi-streaming chat** pattern: sentence-chunked TTS playback, an armed mic,
-   and **barge-in** (speak mid-answer to interrupt). Its `app.js` / `state.js` voice engine is loaded
-   **verbatim** into the HUD — zero regression risk.
+   and **barge-in** (speak mid-answer to interrupt). Its `app.js` / `state.js` voice engine forms the
+   base of our engine (now evolved into the priority-chain controls).
 
 2. **The HUD UI — `eadmin2/jarvis_ai`** (local copy `C:\Users\Admin\lars13`, **copy-source only**).
    The full-screen HUD (`server/hud/index.html`) and the `hermes-plugin/hud_display` (Holo Panel
@@ -116,7 +127,8 @@ npm start                     # → http://localhost:1122
 
 ### 4. Check it
 - Open `http://localhost:1122/` — the original voice page.
-- Open `http://localhost:1122/hud/` — the HUD (primary UI). Click the ring / Space to talk.
+- Open `http://localhost:1122/hud/` — the HUD (primary UI). Click **VOICE CHAT**, then the ring /
+  Space, and talk.
 - Say: *"pull up the kanban on screen"*, *"find a video of Hikaru playing chess and play it in the
   HUD"*, *"open Wikipedia on screen"*.
 

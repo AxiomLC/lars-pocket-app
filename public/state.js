@@ -12,10 +12,15 @@
    Typed input:   idle → thinking → speaking → idle
    Any state can fall back to idle (Stop button, errors, mic blocked).
 
-   Also holds three user-facing flags so they are not loose globals:
-     armed     the user pressed Talk: keep the mic recognizer alive/restarting
-     rearm     re-open the mic when reply audio starts (the "Re-arm" toggle)
-     testMode  Echo test running: log what the mic hears, never act on it
+   The voice controls are a PRIORITY CHAIN (top → bottom), single source of truth:
+     stopped   STOP engaged      — kills LLM + typed chat + voice; STOP glows red
+     micMuted  MASTER MIC OFF    — hard cut of listening; independent of everything
+     rearm     STREAMING         — voice chat + barge-in (requires armed)
+     armed     VOICE CHAT        — turn-about mode: click the Orb to speak
+     testMode  MIC TEST running  — log what the mic hears, never act on it
+
+   Listening is allowed only when: armed && !micMuted && !stopped && !testMode
+   (see canListen() in app.js — the ONE gate everything goes through).
    ===================================================================== */
 'use strict';
 
@@ -32,8 +37,10 @@ const State = (() => {
   const subscribers = [];
 
   return {
-    armed: false,
-    rearm: true,
+    stopped: false,   // STOP top-dog state (default: released / normal)
+    micMuted: false,  // MASTER MIC gate (default: MIC ON)
+    armed: false,     // VOICE CHAT (default: OFF — user must click to enable STT)
+    rearm: false,     // STREAMING (default: OFF — turn-about until enabled)
     testMode: false,
 
     get current() { return current; },

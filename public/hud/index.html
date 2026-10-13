@@ -61,7 +61,7 @@ header .sub{font-size:12px; letter-spacing:3px; color:var(--txt-dim)}
   pointer-events:none; font-family:'Orbitron';
 }
 #coreState .st{font-size:15px; letter-spacing:6px; color:var(--cyan); text-shadow:0 0 14px #00e5ffaa}
-#coreState .hint{font-size:9px; letter-spacing:2px; color:var(--txt-dim); margin-top:6px}
+#coreState .hint{font-size:9px; letter-spacing:2px; color:var(--txt-dim); margin-top:6px; text-align:center; max-width:92%}
 #chat{ /* scrollable middle: pins #chatRow to the bottom, older bubbles scroll up */
   width:100%; max-width:680px; flex:1; overflow-y:auto; margin-top:4px; padding:0 10px 4px;
   display:flex; flex-direction:column; gap:6px; scrollbar-width:thin;
@@ -90,8 +90,12 @@ button.btn.tgl{color:var(--red); border-color:#7a2a33; background:#240a0e; box-s
 button.btn.tgl:hover{box-shadow:0 0 14px #ff4d5e77}
 button.btn.tgl.on{color:var(--teal); border-color:#0e5a52; background:#04231f; box-shadow:0 0 10px #19f0d855}
 button.btn.tgl.on:hover{box-shadow:0 0 18px #19f0d888}
-/* small utility button (MIC TEST) + STOP glow (red only when everything is stopped) */
-button.btn.sm{font-size:10px; padding:2px 8px; letter-spacing:.5px}
+/* small utility buttons (MIC TEST / MIC: ON-OFF) — same HEIGHT as .tgl.xs below
+   them (10px font + 6px vertical padding), only narrower horizontally */
+button.btn.sm{font-size:10px; padding:6px 8px; letter-spacing:.5px}
+/* voice chain toggles — SAME font as MIC TEST / MIC ON-OFF (10px), boxes a bit
+   bigger than those; row uses space-between → one hugs left, one hugs right */
+button.btn.tgl.xs{font-size:10px; padding:6px 16px; letter-spacing:2px}
 button.btn.stopped{color:var(--red); border-color:#7a2a33; background:#240a0e; box-shadow:0 0 8px #ff4d5e55}
 button.btn.stopped:hover{box-shadow:0 0 14px #ff4d5e88}
 #stopBtn{display:none}
@@ -282,11 +286,12 @@ footer{
       <div style="margin-top:6px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
         <button class="btn sm" id="echo" title="Plays a test tone on the speakers and measures real mic input">MIC TEST</button>
         <b id="echoStatus" style="font-size:10px; color:var(--txt-dim)">—</b>
+        <button class="btn tgl on sm" id="micSw" style="margin-left:auto" title="MASTER MIC — OFF cuts all listening (voice chat/streaming keep their state; MIC ON is the only way back)">MIC: ON</button>
       </div>
       <div style="border-top:1px solid var(--line); margin:8px 0"></div>
-      <div style="display:flex; gap:6px; flex-wrap:wrap">
-        <button class="btn tgl" id="mic" style="flex:1" title="Voice chat on — mic listens; off — mic only, Lars keeps talking. Same as clicking the orb">VOICE CHAT</button>
-        <button class="btn tgl on" id="rearm" title="Streaming on — mic stays live during Lars's reply so you can cut him off; off = turn-taking only">STREAMING: ON</button>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:space-between">
+        <button class="btn tgl xs" id="mic" title="VOICE CHAT switch — ON: turn-taking, click the ring to speak / click again or wait 2s to send; OFF: cuts listening only, Lars + typed chat unaffected. STOP must be released first">VOICE CHAT</button>
+        <button class="btn tgl xs" id="rearm" title="STREAMING (needs VOICE CHAT on) — ON: mic live through Lars's reply + barge-in; OFF: turn-taking only. Glow shows the current state">STREAMING</button>
       </div>
     </div>
     <div class="panel"><h2><span>AGENT ACTIVITY</span><span class="num">02</span></h2>
@@ -300,8 +305,6 @@ footer{
       <div class="kv"><span>Last: speech→audio</span><b id="lsTtfs">—</b></div>
       <div class="kv"><span>Context est.</span><b id="lsCtx">—</b></div>
       <div class="bar"><i id="lsCtxBar"></i></div>
-      <div class="kv"><span>Tokens today</span><b id="lsTodayTok">—</b></div>
-      <div class="kv"><span>Turns today</span><b id="lsTodayTurns">—</b></div>
       <div class="kv" id="lsWarnRow" style="display:none"><span>⚠ Context</span><b id="lsWarn" class="err">80%+ — /compact or new session</b></div>
     </div>
     <div class="panel"><h2><span>VIEWS</span><span class="num">04</span></h2>
@@ -317,13 +320,13 @@ footer{
     <div id="approvals"></div>
     <div id="reactorWrap" title="Click to talk">
       <canvas id="reactor"></canvas>
-      <div id="coreState"><div class="st" id="stateLabel">L.A.R.S</div><div class="hint" id="stateHint">CLICK RING OR SPACE TO TALK</div></div>
+      <div id="coreState"><div class="st" id="stateLabel">L.A.R.S</div><div class="hint" id="stateHint">VOICE CHAT OFF</div></div>
     </div>
     <div id="chat"></div>
     <div id="chatRow">
       <input id="txt" placeholder="Type to Hermes… (voice: click the ring)" autocomplete="off">
       <button class="btn" id="send">SEND</button>
-      <button class="btn" id="stop" title="Stops Lars's action AND all voice chat (VOICE CHAT re-arms it)">■ STOP</button>
+      <button class="btn" id="stop" title="STOP (top dog): kills LLM action + typed chat + voice chat + streaming, glows red; press again to release (voice/streaming must be re-enabled manually)">■ STOP</button>
     </div>
   </div>
 
@@ -341,7 +344,6 @@ footer{
       <div class="kv"><span>Hermes CPU</span><b id="hCpu">—</b></div>
       <div class="kv"><span>Hermes RAM</span><b id="hMem">—</b></div>
       <div class="kv"><span>Procs</span><b id="hProcs">—</b></div>
-      <div class="kv"><span>Refreshed</span><b id="hWhen">—</b></div>
     </div>
     <div class="panel"><h2><span>AUTOMATIONS</span><span class="num">07</span></h2>
       <div id="jobsList"><div>—</div></div>
@@ -464,6 +466,7 @@ function addActivity(text,toolName,preview){
 function stopRun(){
   try{ stopListening && stopListening(); }catch{}
   try{ cancelEverything && cancelEverything('stop'); State && State.set('idle'); }catch{}
+  try{ syncVoiceButtons && syncVoiceButtons(); }catch{}   // keep glows truthfu l after Escape
 }
 
 /* approval cards */
@@ -558,7 +561,6 @@ async function refreshDiag(){
     $("hCpu").className=d.cpuPct>50?"err":"";
     $("hMem").textContent=d.up?d.ramMb+" MB":"—";
     $("hProcs").textContent=d.up?d.procs:"—";
-    $("hWhen").textContent=new Date().toTimeString().slice(0,8);
   }catch{}
 }
 async function refreshJobs(){
@@ -595,8 +597,6 @@ async function refreshSession(){
     const bar=$("lsCtxBar"); bar.style.width=(s.ctxPct||0)+"%";
     bar.style.background=s.ctxPct>=80?"crimson":"";
     $("lsWarnRow").style.display=s.ctxPct>=80?"flex":"none";
-    $("lsTodayTok").textContent=fmtK((s.today?.tokIn||0)+(s.today?.tokOut||0));
-    $("lsTodayTurns").textContent=s.today?.turns||0;
   }catch{}
 }
 refreshSession();
@@ -814,31 +814,37 @@ window.openView=openView; window.setState=setState;
 (function(){
   const $=id=>document.getElementById(id);
   const LABELS={idle:"L.A.R.S",listening:"LISTENING",thinking:"PROCESSING",speaking:"SPEAKING"};
-  const HINTS={idle:"CLICK RING OR SPACE TO TALK",listening:"I'M LISTENING…",thinking:"THINKING…",speaking:"SPEAKING — MIC ARMED (STREAMING)"};
+  const HINTS={thinking:"THINKING…"};
+  /* Hint text follows the VOICE PRIORITY CHAIN (see app.js): the ring is a
+     VISUAL + push-to-talk only — its label tells the user why clicks work or
+     don't. */
+  function voiceHint(st){
+    if(State.stopped)  return "CHAT SESSION STOPPED";
+    // MIC-off gets NO special ring label (user decision): the red MIC button is
+    // the indicator; the ring keeps showing the mode text while simply being dead.
+    if(!State.armed)   return "VOICE CHAT OFF";
+    if(st==="idle")      return State.rearm?"I'M LISTENING…":"CLICK RING TO SPEAK";
+    if(st==="listening") return State.rearm?"I'M LISTENING…":"LISTENING — CLICK RING TO SEND";
+    if(st==="speaking")  return State.rearm?"SPEAKING — I CAN HEAR YOU":"SPEAKING — TURN-TAKING";
+    return HINTS[st]||"";
+  }
   function applyVoiceUI(prev,next,label,expected){
     // reactor visual owns the colours; map app States onto the HUD STATE_STYLE keys
-    const hint=next==="speaking"?(State.rearm?"SPEAKING — MIC ARMED (STREAMING)":"SPEAKING — STREAMING OFF (TURN-TAKING)"):HINTS[next];
     if(typeof setState==="function"){
       const st={idle:"standby",listening:"listening",thinking:"thinking",speaking:"speaking",error:"error"}[next]||"standby";
-      setState(st, label || LABELS[next] || "L.A.R.S", hint);
+      setState(st, label || LABELS[next] || "L.A.R.S", voiceHint(next));
     }
-    // VOICE CHAT button glow: green while engaged, red when idle
-    const micOn=State.armed && next!=="idle";
-    if($("mic"))$("mic").classList.toggle("on",micOn);
-    // VOICE LINK panel widgets (mic row + level meter owned by app.js)
-    if($("micDot")){$("micDot").className="dot "+(micOn?"on":"off");}
+    // VOICE CHAT button glow mirrors State.armed exactly (glows otherwise live in app.js syncVoiceButtons)
+    if($("mic"))$("mic").classList.toggle("on",State.armed);
     if(typeof refreshMicStatus==="function")refreshMicStatus(); else if($("micState")){$("micState").textContent=next;}
     if(typeof meterSync==="function")meterSync();
   }
   State.onChange(applyVoiceUI);
   applyVoiceUI(null,State.current,"",true);
 
-  // Orb + Space both act like the mic button (app.js owns #mic's onclick)
-  const fireMic=()=>{try{getAudioCtx&&getAudioCtx();}catch{}; const m=$("mic"); m&&m.click();};
-  $("reactorWrap").onclick=fireMic;
-  addEventListener("keydown",e=>{
-    if(e.code==="Space"&&document.activeElement!==$("txt")){e.preventDefault();fireMic();}
-  });
+  /* The Orb is VISUAL + push-to-talk only. app.js's orbPress() is the single
+     owner of that logic (Space is bound exactly once, in app.js). */
+  $("reactorWrap").onclick=function(){try{typeof orbPress==="function"&&orbPress();}catch(e){}};
 })();
 </script>
 </body>

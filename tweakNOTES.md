@@ -78,6 +78,44 @@ short interval (~5s). Prefer a built-in path over a new server:
 - Keep `VIEWS` (04) and `AUTOMATIONS`/`AGENT ACTIVITY` as-is unless user says otherwise.
 - `.num` suffix labels (01,02…) must match the new panel order.
 
+## 7. Voice control scheme v2 — priority chain (uncommitted, needs eyeball test)
+
+Rewrote the voice controls as an explicit top-down priority chain, with large
+explainer comments in `app.js` (section "THE VOICE PRIORITY CHAIN") so the logic
+follows in one read:
+
+| Rank | Control | State flag | Behavior |
+|---|---|---|---|
+| 1 | **STOP** (top dog) | `State.stopped` | Engage: kills in-flight LLM + blocks typed chat; voice chat & streaming OFF; STOP glows red; ring dead. Release: STOP normal again, typed chat works; **voice/streaming stay OFF until re-enabled manually** (no auto-resume). Default: released. |
+| 2 | **MASTER MIC** (new `#micSw`, right of MIC TEST) | `State.micMuted` | Hard cut of LISTENING only: also stops the hardware stream. Voice chat/streaming keep their green glows. MIC ON is the only way hearing returns. **No special ring label** (user decision — ring keeps mode text while dead). Default: ON. |
+| 3 | **STREAMING** | `State.rearm` | Needs voice chat ON. ON = mic live immediately + through reply (barge-in), ring says "I'M LISTENING". OFF = mic only for Orb talk sessions; open streaming session drops to rest (an in-progress push-to-talk is left alone). Default: OFF. |
+| 4 | **VOICE CHAT** | `State.armed` | Turnabout master: ON = ring becomes push-to-talk (click to start, click again or 2 s timeout to send), hint "CLICK RING TO SPEAK". OFF = cuts listening only — Lars's reply + typed chat untouched. Voice OFF forces streaming OFF. Default: OFF (first click enables Google STT). |
+
+- **Orb/Space = visual + push-to-talk ONLY** (`orbPress()` in app.js — single owner;
+  Space bound once in app.js, HUD ring onclick calls it). It never flips any flag;
+  dead in streaming mode / mic-off / STOP / voice-off.
+- Single listening gate: `canListen()` — every recognizer open/restart/re-arm path
+  goes through it (incl. Chrome session-end restart, post-reply re-arm, error paths).
+- `stopListening(keepArmed)` — outer gates (mic/streaming/test) cut audio without
+  touching voice-chat state.
+- MIC TEST no longer clears streaming, resumes streaming listen after test, restores
+  hardware-cut if MIC was off; resets ring label.
+- Files: `public/state.js` (new flags + defaults), `public/app.js` (chain logic),
+  `public/hud/index.html` (buttons + voiceHint bridge).
+- Validated: `node --check` on both JS files + both inline HUD scripts; wiring greps.
+  **Pending: user eyeball test in browser.**
+- **MIC gate wiring (user rule: MIC on/off rules the whole mic circuit):** MIC OFF now
+  cuts the `Microphone` chip (`MIC OFF` + red dot, gate-reported not hardware), forces
+  the Input Level bar to rest in `meterSync()`, and blocks **MIC TEST** (chip shows
+  red `MIC OFF`) — it never implicitly unmutes. Toggling MIC back ON resets the test
+  chip to `—`. Ring label stays mode-text per earlier decision (no special MIC label).
+- **Cosmetics (round 2):** voice row buttons `.xs` = same font as MIC TEST/MIC ON-OFF
+  (10px) but slightly bigger boxes (6px/16px vs 2px/8px), `space-between` row → left/right
+  justified with centre gap; ring hints shortened (`VOICE CHAT OFF`, `CHAT SESSION STOPPED`)
+  and center-aligned (`text-align:center`).
+
+---
+
 ## Open questions (blockers to resolve before building)
 - Q1: Hermes RPC — can we read per-session token usage / context bytes over `:9119`? (Drives §3.)
 - Q2: Does a dashboard plugin `/stats` route already exist + is it reachable? (Drives §5.)
