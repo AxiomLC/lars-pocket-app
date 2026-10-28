@@ -1,82 +1,62 @@
 # lars-pocket-app
 
-A **two-way voice assistant for Lars** — an always-on, streaming-voice chat that talks to a live
-Hermes `lars` profile and can drive an on-screen **HUD / Holo Panels** (web pages, YouTube videos,
-images) by voice command. Built on top of a proven **semi-streaming voice + barge-in** chassis.
+A **two-way voice assistant for Lars** — streaming, sentence-chunked voice chat with a live
+Hermes `lars` profile, plus a full-screen **HUD / Holo Panels** Lars drives by voice (web pages,
+YouTube videos, images, iframed Hermes views). Zero runtime dependencies (`node:http` only).
 
-> **Beta v1.8** — streaming voice to Hermes Lars with priority-chain voice controls
-> (STOP / MIC / STREAMING / VOICE CHAT) and a HUD-enabled UI (Holo Panels).
+> **Beta v1.8** — voice to Hermes Lars with the top-down priority-chain voice controls
+> (STOP → MIC → STREAMING → VOICE CHAT) and the HUD as primary UI.
 
 ---
 
 ## What it is
 
-You talk to Lars with a mic on (or type); Lars answers out loud, streaming sentence-by-sentence.
-Because voice latency is the whole game, the brain is a **fast streaming model** and replies are
-**chunked and played as they arrive** (not after the full reply).
+Talk to Lars (or type). Lars replies out loud, sentence by sentence, chunked and played as it
+arrives. Because streaming is "the whole game", replies are spoken as they stream and you can
+barge in mid-reply when STREAMING is on.
 
-Lars also controls a full-screen **HUD** at `/hud/`:
-- **Holo Panels** — floating panels Lars summons by voice to show a web page, a YouTube video, an
-  image, or the Hermes dashboard/kanban on screen.
-- **VIEWS** — quick-jump iframes (KANBAN / HERMES DASHBOARD / CHAT) from the Hermes `:9119` server.
+Two UIs on the same server:
 
-**Voice controls — a top-down priority chain (top wins):**
+- **`/hud/`** — primary UI: full-screen HUD with Holo Panels (summoned by voice), VIEWS
+  (kanban / dashboard / chat iframed from Hermes `:9119`), and the voice panel.
+- **`/`** — the original lightweight voice page (pre-HUD baseline, still served and working).
+
+**Voice controls — top-down priority chain (top wins):**
 
 | Control | What it does |
 |---|---|
-| **STOP** | Top dog: kills the running reply + typed chat, turns voice off; glows red; press again to release |
-| **MIC: ON/OFF** | Hard mic cut — status chip, input level and MIC TEST all go dead when OFF; MIC ON is the only way back |
+| **STOP** | Top dog: kills the running reply + typed chat, turns voice off; glows red; press again to release (voice stays off until re-enabled manually) |
+| **MIC: ON/OFF** | Hard mic cut — status chip, input level and MIC TEST go dead when OFF; MIC ON is the only way back |
 | **STREAMING** | Mic stays live during Lars's reply → talk over him (barge-in); needs VOICE CHAT on |
 | **VOICE CHAT** | Turnabout mode: click the ring (or Space) to talk, click again or wait 2 s to send |
 | **Ring / Space** | Visual + push-to-talk only — never flips a switch itself |
 
----
+## Stack & ports
 
-## The stack & ports
+| Port | Service | Role | Must be up |
+|---|---|---|---|
+| **1122** | This app (`server.js`) | Serves UI + HUD; proxy for chat & TTS | yes (`start.bat`/`npm start`) |
+| **1133** | Pocket TTS (`uvx pocket-tts serve`) | Text → speech (`alba`), semi-streaming chunked WAV | yes (auto-started if down) |
+| **9119** | Hermes **dashboard** | The live Lars session via JSON-RPC WebSocket (`/api/ws`); app auto-discovers session token from its page | **yes — the #1 outage cause** (see `HowToDebug.md`) |
+| 8642 | Hermes gateway API server (`hermes gateway run`) | Hermes-side OpenAI-compatible server; **this app does NOT use it** | no |
 
-| Port | Service | Role |
-|---|---|---|
-| **1122** | This app (`server.js`, `node:http`) | Serves the UI + HUD, proxies chat & TTS |
-| **1133** | Pocket TTS (`uvx pocket-tts serve`) | Text → speech (built-in `alba` voice); **semi-streaming chunked WAV** |
-| **9119** | Hermes (`hermes dashboard`/serve) | The live Lars profile session via JSON-RPC WebSocket (`/api/ws`) |
-
-- **STT (you→Lars):** in-browser **Web Speech API** — no server, no key.
-- **Brain:** the **Hermes `lars` profile** (default) via `:9119`; a direct-**Cerebras** `gpt-oss-120b`
-  scaffold is wired (same SSE shape) for an A/B latency path.
-- **TTS (Lars→you):** **Pocket TTS** on `:1133`, streamed through our `/api/tts` proxy as chunked WAV,
-  played gapless with **Web Audio**.
-- **Voice UX:** the four-control priority chain above, sentence-chunked playback, typed
-  chat. Zero external runtime dependencies (`node:http` only).
+- **STT (you → Lars):** in-browser **Web Speech API** (Chrome) — no server, no key.
+- **Brain:** the Hermes `lars` profile (default) via `:9119`; a direct-**Cerebras** `gpt-oss-120b`
+  scaffold is wired behind the same SSE shape for A/B latency (`BRAIN=cerebras`).
+- **TTS (Lars → you):** **Pocket TTS** on `:1133`, streamed through `/api/tts` as chunked WAV,
+  played gapless with Web Audio.
 
 ```
 Chrome (Web Speech STT; ring = push-to-talk; barge-in when STREAMING on)
   │  Web Speech STT → transcript
   ▼
-[ lars-pocket-app :1122 ]  POST /api/chat (OpenAI-SSE)
+[ lars-pocket-app :1122 ]  POST /api/chat (OpenAI-SSE shape)
   │  Hermes leg: /api/ws JSON-RPC → session.create → prompt.submit → message.delta
   ▼
-Hermes live `lars` session → SSE → sentence-chunker
+Hermes live `lars` session (dashboard :9119) → SSE → cleanSpokenText → sentence-chunker
   ▼
 POST /api/tts {text} → Pocket TTS (:1133) → chunked WAV → Web Audio gapless playback
 ```
-
----
-
-## Where it came from
-
-This project reuses two things:
-
-1. **The voice chassis — `AxiomLC/lars-pocket-tts`** (`C:\Users\Admin\lars-pocket-tts`, **read-only**).
-   That repo proved the **semi-streaming chat** pattern: sentence-chunked TTS playback, an armed mic,
-   and **barge-in** (speak mid-answer to interrupt). Its `app.js` / `state.js` voice engine forms the
-   base of our engine (now evolved into the priority-chain controls).
-
-2. **The HUD UI — `eadmin2/jarvis_ai`** (local copy `C:\Users\Admin\lars13`, **copy-source only**).
-   The full-screen HUD (`server/hud/index.html`) and the `hermes-plugin/hud_display` (Holo Panel
-   summon tools) are ours, adapted to point at **our** loopback `/api/summon` instead of the original's
-   TLS proxy. We ported the **UI**, not jarvis_ai's voice/audio stack.
-
-> Both upstream repos are intentionally **read-only / never pushed-to**. All new work lives here.
 
 ---
 
@@ -84,53 +64,71 @@ This project reuses two things:
 
 ### Prerequisites
 - **Node.js** (v18+; built/tested on v23), **uvx** (for Pocket TTS).
-- **Hermes** running with a `lars` profile, and its **`:9119` dashboard/gateway up**.
-  - The app auto-connects to `:9119` (auto-discovers the session token from the dashboard page).
+- **Hermes running with the `:9119` dashboard up** (the app auto-connects to it and
+  auto-discovers the session token from the dashboard page). The Hermes **desktop app alone
+  is not enough** — it serves its backend on a *random* port; the app needs the dedicated
+  `:9119` dashboard process. See `HowToDebug.md` §9 for the exact restart commands.
 - A browser with a working mic (Chrome recommended).
 
+> **No Hermes component autostarts at login on this machine** (the only Startup-folder VBS is
+> named `Hermes_Dashboard.vbs.disabled` — inactive). After a reboot, relaunch the `:9119`
+> dashboard first (exact command: `HowToDebug.md` §9.1) and the gateway if needed (`§9.3`).
+
 ### 1. Environment
-Copy `.env` (it is gitignored; a sample layout follows — only `PORT` is strictly required):
+Copy `.env` (gitignored; only `PORT` is strictly required — everything else has sane defaults):
 ```env
 PORT=1122
-BRAIN=hermes                 # hermes (default) | cerebras
+ENV=dev                           # informational
+BRAIN=hermes                      # hermes (default) | cerebras
 HERMES_PROFILE=lars
-# CEREBRAS_API_KEY=          # only for BRAIN=cerebras
-# CEREBRAS_MODEL=gpt-oss-120b
+
+# TTS / voice
 POCKET_URL=http://localhost:1133/tts
-POCKET_VOICE=alba            # bare name → Pocket's built-in voice
+POCKET_CMD=uvx pocket-tts serve --port 1133   # auto-starts TTS if it is down
+# POCKET_VOICE=alba               # bare name → Pocket's built-in voice (a URL = cloned voice)
+
+# Cerebras leg — only for BRAIN=cerebras
+# CEREBRAS_API_KEY=...
+# CEREBRAS_MODEL=gpt-oss-120b
+# CEREBRAS_URL=https://api.cerebras.ai/v1
+# SYSTEM_PROMPT=                  # brain prompt override
+# HISTORY_TURNS=6                 # turns kept for cerebras context
+# MAX_TOKENS=...
+
+# Only needed if :9119 ever moves:
+# HERMES_WS_ORIGIN=http://127.0.0.1:9119
 ```
 
-> **Web search:** for Lars to find real video/page URLs, Hermes needs a working search backend.
-> Set `TAVILY_API_KEY` in Hermes' `.env` (global `...\hermes\.env` or the `lars` profile's). Without
-> one, Hermes' keyless Firecrawl tier often `403`s and Lars can't supply a real URL.
-
-### 2. Hermes side — enable the HUD (Holo Panel) tools (one-time)
-The `hud_display` plugin (in `hermes-plugin/hud_display/`) gives Lars the `hud_display` /
-`hud_dismiss` tools that summon panels. It lives in the **`lars` profile home** (profile settings
-override global Hermes):
-1. Copy `hermes-plugin/hud_display/` → `<hermes>\profiles\lars\plugins\hud_display\`
+### 2. Hermes side — `hud_display` plugin (one-time, for Holo Panels)
+The `hud_display` / `hud_dismiss` tools live in `hermes-plugin/hud_display/` and must be
+deployed into the **`lars` profile home** (profile settings override global Hermes):
+1. Copy `hermes-plugin/hud_display/` → `<hermes>\profiles\lars\plugins\hud_display\` (overwrite)
 2. Add `- hud_display` to `plugins.enabled` in `<hermes>\profiles\lars\config.yaml`
-3. **Restart the `:9119` dashboard** (`hermes` process, not just the desktop app) so it registers the
-   `hud` toolset, and start a **new** Lars session.
+3. **Restart the `:9119` dashboard process** (not just the desktop app) and start a **new**
+   Lars session — the dashboard caches its tool registry at startup.
 
-> Full, verified profile-setup + tool-deploy steps: see `buildREADME.md` §6A.
+> **It is a hand-copied plugin, not a live link.** `hermes-plugin/hud_display/` here is the
+> *source*; Hermes runs its own separate copy in the profile's `plugins\hud_display\`. There is
+> **no symlink and no auto-sync** — editing this repo's folder changes nothing over there.
+> On **every** plugin update you must re-copy (overwrite) + restart the dashboard + start a new
+> Lars session. (The two copies were verified byte-identical on 2026-10-28 — exactly because a
+> hand-copy was done, not because anything wires them together.)
 
 ### 3. Run
 ```cmd
-:: one-shot: starts Pocket TTS if down, runs the UI, opens the browser
-start.bat
-
-:: or manually
+start.bat          :: one-shot: starts Pocket TTS if down, runs the UI on :1122, opens browser
+:: or manually:
 uvx pocket-tts serve --port 1133
-npm start                     # → http://localhost:1122
+npm start          :: → http://localhost:1122
 ```
 
 ### 4. Check it
-- Open `http://localhost:1122/` — the original voice page.
-- Open `http://localhost:1122/hud/` — the HUD (primary UI). Click **VOICE CHAT**, then the ring /
-  Space, and talk.
-- Say: *"pull up the kanban on screen"*, *"find a video of Hikaru playing chess and play it in the
-  HUD"*, *"open Wikipedia on screen"*.
+- `curl http://127.0.0.1:1133/health` → Pocket TTS OK
+- `curl http://localhost:1122/api/config` → shows brain / profile / pocketUp / hermesUrl
+- `curl -s http://127.0.0.1:9119/ | grep __HERMES_SESSION_TOKEN` → dashboard has the token page
+- Open `http://localhost:1122/hud/` — click **VOICE CHAT**, then the ring / Space, and talk.
+- Say: *"pull up the kanban on screen"*, *"find a video of Hikaru playing chess and play it in
+  the HUD"*, *"open Wikipedia on screen"*.
 
 ---
 
@@ -138,16 +136,29 @@ npm start                     # → http://localhost:1122
 
 | Path | Purpose |
 |---|---|
-| `server.js` | `node:http` server: UI static, `/api/chat` (Hermes/Cerebras SSE), `/api/tts` proxy, `/api/summon` + `/events` HUD broadcast, `/api/embed` iframe proxy |
-| `public/` | `index.html` (voice page), `app.js` + `state.js` (voice engine), `hud/index.html` (HUD) |
-| `hermes-plugin/hud_display/` | Hermes plugin giving Lars `hud_display` / `hud_dismiss` tools |
-| `start.bat` | Launcher: Pocket TTS + UI + browser (never touches Hermes) |
-| `buildREADME.md` | Detailed, authoritative tech/build guide |
+| `server.js` | `node:http` server: UI static, `/api/chat` (Hermes/Cerebras SSE), `/api/tts` proxy, `/api/summon` + `/events` HUD broadcast, `/api/embed` iframe strip-proxy, `/api/config`, `/api/log` mirror |
+| `public/` | `index.html` (legacy voice page), `app.js` + `state.js` (voice engine), `hud/index.html` (HUD) |
+| `hermes-plugin/hud_display/` | Hermes **tool plugin** (the HUD's command side — gives Lars `hud_display` / `hud_dismiss`). Must be **hand-copied** to `profiles\lars\plugins\hud_display\` + dashboard restart on every update (not live-linked — see §2) |
+| `start.bat` | Launcher: Pocket TTS (if down) + UI + browser — never touches Hermes |
+| `HowToDebug.md` | **Debug manual for future AI/humans**: log map, CLI kit, failure modes, Windows/Chrome watch-outs |
 
 ---
 
 ## Notes & limitations
-- **External pages** frame through the `/api/embed` strip-proxy; a few sites still refuse via JS, and
-  heavy SPA/login pages won't fully render.
-- Lars's tool-call narration is filtered out of the spoken stream (only real answers are spoken).
-- `:8642` (Hermes optional OpenAI API server) is **off / not used** by this app.
+- **`:9119` is the #1 outage cause.** The desktop app's backend binds a *random* port
+  (`hermes serve --port 0`); the dedicated `:9119` dashboard is a separate process started at
+  login (VBS) and does **not** auto-return on a Hermes-only restart. Symptom: `empty reply from
+  LLM`. Everything you need is in `HowToDebug.md`.
+- **External pages** frame through the `/api/embed` strip-proxy (removes `X-Frame-Options`/CSP);
+  a few sites still refuse via JS, and heavy SPA/login pages won't fully render. YouTube keeps
+  its native `/embed/` form.
+- Lars's tool-call narration / `<HUD DISPLAY>` tags / URLs are filtered out of the spoken stream
+  (`cleanSpokenText()`) — only real answers are heard.
+- `:8642` (Hermes optional OpenAI API server) is **not used** by this app.
+- `lars-pocket-tts` and `lars13` (jarvis_ai) are external reference repos — **read-only**.
+- **One persistent Lars session.** The app creates and holds a single Hermes session on your
+  `lars` profile (`session.create`; the id is cached across turns), so the conversation **continues
+  turn to turn and is a real Hermes session** — you can open Hermes desktop/dashboard → **Sessions**
+  and view (or continue) the full chat log there. While the app is holding it, opening that same
+  session in the Hermes UI can cause Hermes to reclaim it (`ws_orphan_reap`); the app then silently
+  starts a fresh session, and the old log stays viewable in Hermes.
