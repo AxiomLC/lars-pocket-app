@@ -162,3 +162,7 @@ npm start          :: → http://localhost:1122
   and view (or continue) the full chat log there. While the app is holding it, opening that same
   session in the Hermes UI can cause Hermes to reclaim it (`ws_orphan_reap`); the app then silently
   starts a fresh session, and the old log stays viewable in Hermes.
+- **STT fallback:** STT is the browser's Web Speech API (no local STT in this app); if that ever
+  fails, the local engine is sherpa-onnx / faster-whisper (optionally Moonshine) — already present on
+  this machine in the separate Lars voice module (`desktop-plugins\lars\voice\`, see HowToDebug.md
+  §6.3), but a different machine would have to install those dependencies itself.

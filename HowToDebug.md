@@ -213,6 +213,13 @@ node --check server.js public/app.js public/state.js
   if it persists, reload the page to break the loop. There is **no server-side STT** — do not add keys.
 - **Watch-out:** don't `taskkill` all `chrome.exe` — the user has other tabs; target the HUD instance
   (or just use Chrome's own restart).
+- **Local-STT fallback (if Chrome STT keeps failing):** this app has no local STT, but the engine
+  already exists on this box in the separate voice stack `desktop-plugins\lars\voice\`
+  (voice_server.py :8000): **sherpa-onnx 1.13.8** (streaming zipformer-20M, wake-word, silero VAD)
+  in `voice\.venv` + `voice\models\`, and **faster-whisper 1.2.1** in the hermes-agent venv. To go
+  local, reuse that engine — sherpa-onnx (1.13+) also runs the newer tiny/accurate **Moonshine**
+  models (a model download only, no new runtime). Chrome's cloud Web Speech recognition has had
+  intermittent regional outages since Jul-2026 (verified 2026-10-28).
 
 ### 6.4 "Waiting for Pocket TTS to load (first run downloads the model)…"
 - First ever TTS run downloads the model (can be ~30–60 s). During this, `/api/tts` returns
