@@ -166,3 +166,10 @@ npm start          :: → http://localhost:1122
   fails, the local engine is sherpa-onnx / faster-whisper (optionally Moonshine) — already present on
   this machine in the separate Lars voice module (`desktop-plugins\lars\voice\`, see HowToDebug.md
   §6.3), but a different machine would have to install those dependencies itself.
+- **Hermes v0.22.5+ session ownership:** one process at a time may drive a live session. While this
+  app holds the session (via the `:9119` dashboard), Hermes Desktop / the dashboard web UI refuse to
+  attach — `Resume failed: runtime_coordination_required`. Reading the stored transcript is NOT
+  blocked, so in the Desktop you can still watch by **clicking away and back** (DB-backed refresh);
+  ignore the banner — it is cosmetic for our workflow. Live simultaneous viewing is upstream work:
+  [NousResearch/hermes-agent#146014](https://github.com/NousResearch/hermes-agent/issues/146014)
+  (ours, filed 2026-10-28) + #28690; expected to land as an observe/follow mode.

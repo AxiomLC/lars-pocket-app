@@ -249,6 +249,27 @@ node --check server.js public/app.js public/state.js
   `taskkill` killing the interpreter image, not a real crash. If pid is running and gateway.log says
   `Gateway running with N platform(s)`, it's fine.
 
+### 6.8 Hermes v0.22.5 session ownership — Desktop/Dashboard refuse to open the app's session
+- **Symptom:** app chat works, but in Hermes Desktop the session shows stored turns with a persistent
+  `Resume failed: JsonRpcGatewayError: runtime_coordination_required` banner; the `:9119` dashboard
+  web UI errors the same way.
+- **Mechanism:** v0.22.5 enforces ONE live owner per session via a per-profile lease registry
+  (`<HERMES_HOME>\profiles\<profile>\runtime\active_sessions.json`). The claim is PID-scoped and held
+  by whichever process runs the turns — here the `:9119` dashboard. Any second opener (Desktop's own
+  backend, or another client of the same dashboard) is refused `runtime_coordination_required`;
+  single-writer exclusivity is deliberate (historical double-writer/interrupt bugs). Release happens
+  on session end / WS drop / process exit (`ws_orphan_reap`, `idle_timeout`, …).
+- **The transcript reader is NOT gated:** Desktop pages stored rows over REST — clicking **away and
+  back** refreshes the view. That is the sanctioned (if manual) way to watch our session live-ish.
+  Ignore the banner — it is cosmetic for this workflow.
+- **Do NOT chase as an app bug** — verified root cause 2026-10-28 (lease held by PID 11948 for
+  session 20261028_121948_83c64e). Workarounds: (1) HUD chat panel = live view; (2) Desktop
+  click-away/back refresh; (3) view-after: once the runtime releases (app stopped / dashboard
+  restarted / session ended), any surface mounts the full history read-only.
+- **Upstream pressure (ours):** nousresearch/hermes-agent#146014 (filed 2026-10-28) + open request
+  #28690 for observe/coordination. Downgrading to v0.21.5 restores pre-update attach behavior if
+  this ever matters more than the update's fixes.
+
 ---
 
 ## 7. Windows shell traps for the agent (Git Bash vs cmd vs PowerShell)
