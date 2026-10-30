@@ -56,6 +56,7 @@ function pipeReadableTo(res, source, headers) {
 
 // Self-pruning mirror of the browser log panel: keeps only the newest 200 lines.
 const UI_LOG = path.join(__dir, 'logs', 'ui.log');
+try { fs.mkdirSync(path.dirname(UI_LOG), { recursive: true }); } catch {}
 const UI_LOG_LINES = 200;
 function appendUiLog(line) {
   try {
