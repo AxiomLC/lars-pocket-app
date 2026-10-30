@@ -225,14 +225,80 @@ async function getOrCreateSession() {
 // Strip things Lars never means to be HEARD: tool-call JSON, <HUD DISPLAY>/HTML tags,
 // thinking/reasoning markers, and lone tool names. Keeps the spoken stream clean without
 // dropping real prose. (TTS gets the result; the chat bubble may still show raw content.)
+//
+// v0.22.5 streams tool-call JSON INLINE in message.delta text, chunked (segment/offset),
+// glued to interim narration ("Just a moment…{\"tool\":...}}"). A per-chunk regex can't
+// match a partial JSON (no closing brace), so cleanSpokenStream() buffers until braces
+// balance, drops complete tool-call blocks, and retracts the narration glued before them.
+const NARR_LOOKBACK = 32; // chars of lookback kept un-emitted so narration before a tool call can be retracted
+const TOOL_JSON_RE = /^\{\s*"(tool|name)"/;
+// Interim narration phrases Hermes glues before an inline tool-call JSON ("Just a moment…{\"tool\":…").
+// Built from an array so the alternation stays balanced. Only applied right before a stripped tool block.
+const NARRATION_PHRASES = [
+  'just a moment', 'one moment', 'give me a moment', 'okay,? checking',
+  'okay, checking that', 'okay, checking on that',
+  'checking that', 'checking on that',
+  'let me check', 'let me see', 'let me look', 'let me find', 'let me search',
+  'let me verify', 'let me confirm', 'let me pull', 'let me open', 'let me get',
+  'let me grab', 'let me fetch', 'let me try', 'let me think', 'let me look up',
+  'let me check on', 'let me check that', 'let me see if', 'let me check if',
+  'let me look that up', 'let me find that', 'let me pull that up', 'let me open that',
+  'let me get that', 'let me look at', 'let me check the', 'let me open the',
+  'let me pull up the', 'let me find the', 'let me get the', 'let me see the',
+  'let me look up the', 'let me find out', 'let me look into', 'let me investigate',
+  'let me take a look', 'let me have a look', 'let me look for', 'let me check for',
+  'let me search for', 'let me see what', 'let me find out what', 'let me check on the',
+  'let me pull up', 'let me open up', 'let me find me', 'let me show me',
+  'let me look into the', 'let me check on that', 'let me see about',
+  'let me look at the', 'let me check the status',
+];
+const NARRATION_RE = new RegExp(`(?:\\b(?:${NARRATION_PHRASES.join('|')})\\b|hmm+|um+|uh+)[….,:;!? ]*$`, 'i');
+
+function cleanSpokenStream(text, st, flush = false) {
+  st.pending += text;
+  let out = '';
+  while (st.pending.length) {
+    const open = st.pending.indexOf('{');
+    if (open === -1) {
+      // No JSON in flight: emit all but a short lookback tail (so narration glued
+      // to a tool call in the NEXT chunk can still be retracted). Flush = emit all.
+      const keep = flush ? 0 : Math.min(st.pending.length, NARR_LOOKBACK);
+      out += st.pending.slice(0, st.pending.length - keep);
+      st.pending = st.pending.slice(st.pending.length - keep);
+      break;
+    }
+    // Scan from `open` for the matching '}' (brace depth; handles nested parameters).
+    let depth = 0, j = -1;
+    for (let k = open; k < st.pending.length; k++) {
+      const c = st.pending[k];
+      if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) { j = k; break; } }
+    }
+    if (j === -1) {
+      // Unclosed at chunk end: keep from the lookback window before `{`, emit the rest.
+      // On flush (turn end) there is no next chunk to retract narration, so emit up to `{`.
+      const keepFrom = flush ? open : Math.max(0, open - NARR_LOOKBACK);
+      out += st.pending.slice(0, keepFrom);
+      st.pending = st.pending.slice(keepFrom);
+      break;
+    }
+    if (TOOL_JSON_RE.test(st.pending.slice(open, j + 1))) {
+      // Tool-call JSON: drop the whole block plus any interim narration glued before it.
+      st.pending = st.pending.slice(0, open).replace(NARRATION_RE, '') + st.pending.slice(j + 1);
+    } else {
+      // Prose that merely contains braces: emit through the closing brace.
+      out += st.pending.slice(0, j + 1);
+      st.pending = st.pending.slice(j + 1);
+    }
+  }
+  return out;
+}
+
 function cleanSpokenText(raw) {
   if (!raw) return '';
   let t = String(raw);
   // <HUD DISPLAY>...</HUD DISPLAY> or any <...> markup
   t = t.replace(/<HUD[^>]*>[\s\S]*?<\/HUD>|<[^>]+>/gi, ' ');
-  // JSON tool-call blocks / raw tool JSON literals
-  t = t.replace(/\{\s*"tool"[\s\S]*?\}/gi, ' ');
-  t = t.replace(/\{\s*"name"[\s\S]*?\}/gi, ' ');
   // known tool-call narration + interim comms prefixes
   t = t.replace(/\b(?:hud_display|hud_dismiss|web_search|browser_navigate)\b[\s,]*/gi, ' ');
   // markdown/URL noise
@@ -249,21 +315,25 @@ function streamHermesChat(req, res, messages) {
   const close = () => { if (!done) { done = true; if (curTurn?.id === turn.id) curTurn = null; } };
   const endStream = () => { if (done) return; res.write('data: [DONE]\n\n'); close(); res.end(); };
 
+  // Only forward a delta to the spoken stream if it contains real deliverable text.
+  const emit = (clean) => {
+    if (!clean) return;
+    if (!turn.firstSpokenAt) {
+      turn.firstSpokenAt = Date.now();
+      if (turn.submitAt) lastTtfsMs = turn.firstSpokenAt - turn.submitAt;
+    }
+    turn.chars += clean.length;
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: clean } }] })}\n\n`);
+  };
+
   // Per-turn promise + relay (registered as the current turn).
   const turn = {
     id: hermesSeq++, chars: 0, sawRaw: 0,
     submitAt: null, firstSpokenAt: null,
+    pending: '',                       // cleanSpokenStream() lookback/JSON buffer
     push(text) {
-      this.sawRaw++;                       // any delta of THIS turn (even if filtered out of speech)
-      const clean = cleanSpokenText(text);
-      // Only forward a delta to the spoken stream if it contains real deliverable text.
-      if (!clean) return;
-      if (!this.firstSpokenAt) {
-        this.firstSpokenAt = Date.now();
-        if (this.submitAt) lastTtfsMs = this.firstSpokenAt - this.submitAt;
-      }
-      this.chars += clean.length;
-      res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant', content: clean } }] })}\n\n`);
+      this.sawRaw++;                   // any delta of THIS turn (even if filtered out of speech)
+      emit(cleanSpokenText(cleanSpokenStream(text, this)));
     },
     promise: null,
   };
@@ -305,6 +375,8 @@ function streamHermesChat(req, res, messages) {
       }
       if (r?.error) throw new Error(r.error.message || 'prompt.submit failed');
       await Promise.race([completePromise, new Promise(r => setTimeout(r, 30000))]);
+      // Flush any prose still held in the lookback/JSON buffer (turn ended mid-stream).
+      emit(cleanSpokenText(cleanSpokenStream('', turn, true)));
       hlog(`turn ${turn.id} complete, chars=${turn.chars}`);
       endStream();
     } catch (e) {
