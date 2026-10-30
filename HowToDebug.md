@@ -249,6 +249,18 @@ node --check server.js public/app.js public/state.js
   `taskkill` killing the interpreter image, not a real crash. If pid is running and gateway.log says
   `Gateway running with N platform(s)`, it's fine.
 
+### 6.9 v0.22.5 tool-call JSON spoken + shown in chat — FIXED 2026-10-30
+- **Symptom:** tool calls appeared in the chat bubble AND were spoken aloud (e.g.
+  `Just a moment…{"tool":"hud_display",…}}`).
+- **Cause:** v0.22.5 streams tool-call JSON INLINE in `message.delta` text, chunked (`segment`/`offset`);
+  the old per-chunk regex couldn't match a partial JSON (no closing brace in the chunk), so fragments leaked.
+- **Fix (server.js):** `cleanSpokenStream()` — a stateful, brace-balanced buffer that drops complete
+  `{"tool"…}`/`{"name"…}` blocks across chunk boundaries, retracts interim narration glued before them
+  ("Just a moment…", "Okay, checking that…"), and flushes at turn end. Verified against real DB text
+  (`profiles\lars\state.db` messages table) 2026-10-30.
+- **If it recurs:** check `profiles\lars\state.db` → `messages` for inline JSON in assistant content, and
+  re-test with the chunked repro (narration + `{` split across deltas).
+
 ### 6.8 Hermes v0.22.5 session ownership — Desktop/Dashboard refuse to open the app's session
 - **Symptom:** app chat works, but in Hermes Desktop the session shows stored turns with a persistent
   `Resume failed: JsonRpcGatewayError: runtime_coordination_required` banner; the `:9119` dashboard
