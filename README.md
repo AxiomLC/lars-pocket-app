@@ -15,11 +15,12 @@ Talk to Lars (or type). Lars replies out loud, sentence by sentence, chunked and
 arrives. Because streaming is "the whole game", replies are spoken as they stream and you can
 barge in mid-reply when STREAMING is on.
 
-Two UIs on the same server:
+One UI on the server:
 
-- **`/hud/`** — primary UI: full-screen HUD with Holo Panels (summoned by voice), VIEWS
-  (kanban / dashboard / chat iframed from Hermes `:9119`), and the voice panel.
-- **`/`** — the original lightweight voice page (pre-HUD baseline, still served and working).
+- **`/`** (and `/hud/`) — the full-screen HUD with Holo Panels (summoned by voice), VIEWS
+  (kanban / dashboard iframed from Hermes `:9119`), and the voice panel. `localhost:1122` serves
+  the HUD directly at the root; `/hud/` still works as a back-compat alias. The legacy pre-HUD
+  voice page was removed.
 
 **Voice controls — top-down priority chain (top wins):**
 

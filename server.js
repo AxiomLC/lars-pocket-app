@@ -87,6 +87,14 @@ function broadcastSummon(payload) {
   });
   console.log(`[hud] summon broadcast to ${buf.length} HUD screen(s)`);
 }
+function broadcastViewer(payload) {
+  const buf = [];
+  hudClients.forEach((res, i) => {
+    buf.push(i);
+    try { sseWrite(res, 'summon_viewer', payload); } catch { hudClients.delete(res); }
+  });
+  console.log(`[hud] viewer broadcast to ${buf.length} HUD screen(s)`);
+}
 function broadcastDismiss() {
   let n = 0;
   hudClients.forEach(res => {
@@ -231,8 +239,11 @@ async function getOrCreateSession() {
 // glued to interim narration ("Just a moment…{\"tool\":...}}"). A per-chunk regex can't
 // match a partial JSON (no closing brace), so cleanSpokenStream() buffers until braces
 // balance, drops complete tool-call blocks, and retracts the narration glued before them.
+// Tool-call wrappers appear under several root keys depending on streaming format —
+// {"tool":…}, {"name":…}, {"calls":[…]}, {"input":…}/({"tool_use":…}) (Anthropic),
+// {"function":…}/{"type":"function"…} (OpenAI). Match all of them so no shape leaks.
 const NARR_LOOKBACK = 32; // chars of lookback kept un-emitted so narration before a tool call can be retracted
-const TOOL_JSON_RE = /^\{\s*"(tool|name)"/;
+const TOOL_JSON_RE = /^\{\s*"(tool|name|calls|input|tool_use|function|id|type)"/;
 // Interim narration phrases Hermes glues before an inline tool-call JSON ("Just a moment…{\"tool\":…").
 // Built from an array so the alternation stays balanced. Only applied right before a stripped tool block.
 const NARRATION_PHRASES = [
@@ -300,6 +311,14 @@ function cleanSpokenText(raw) {
   let t = String(raw);
   // <HUD DISPLAY>...</HUD DISPLAY> or any <...> markup
   t = t.replace(/<HUD[^>]*>[\s\S]*?<\/HUD>|<[^>]+>/gi, ' ');
+  // Defensive reasoning/CoT strip — mirrors Hermes' own THINK_TAG_NAMES + _THINK_STRIP_PATTERNS
+  // (agent/think_scrubber.py). Primary fix is model.reasoning_effort: none, but if this model is
+  // ever reused with low reasoning and emits tag-wrapped chain-of-thought, drop it here too so it
+  // never reaches TTS / the chat bubble (#1). Legit spoken prose never uses these tags.
+  const THINK_TAGS = '(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD|思考|反思|推理|推敲)';
+  t = t.replace(new RegExp(`<${THINK_TAGS}[^>]*>[\s\S]*?<\/${THINK_TAGS}>`, 'gi'), ' '); // full blocks
+  t = t.replace(new RegExp(`(?:^|\n)[ \t]*<${THINK_TAGS}[^>]*>[\s\S]*`, 'gi'), ' ');      // unterminated tail
+  t = t.replace(new RegExp(`<\/?${THINK_TAGS}>\s*`, 'gi'), ' ');                            // stray/orphan tags
   // known tool-call narration + interim comms prefixes
   t = t.replace(/\b(?:hud_display|hud_dismiss|web_search|browser_navigate)\b[\s,]*/gi, ' ');
   // markdown/URL noise
@@ -620,12 +639,26 @@ const server = http.createServer(async (req, res) => {
       let body = {};
       try { body = JSON.parse(await readBody(req)) || {}; } catch {}
       if (body.action === 'dismiss') broadcastDismiss();
-      else broadcastSummon({
-        media: body.media || 'iframe',
-        src: body.src || '',
-        title: (body.title || 'INCOMING FEED'),
-        position: ['left', 'right', 'center'].includes(body.position) ? body.position : 'center',
-      });
+      else {
+        const src = body.src || '';
+        // Internal Hermes dashboard views (Kanban board, dashboard root) are detected
+        // here and routed to the big #viewer modal instead of a floating holo panel.
+        // Lars still calls hud_display exactly as before — this is a server-side shunt
+        // so a "pull up the kanban" request becomes a proper full-window view.
+        let m = src.match(/^https?:\/\/([^\/?#]+)(\/[^ \?#]*)?(?:[\?#].*)?$/i);
+        const host = m ? m[1] : '';
+        const p = m ? (m[2] || '/') : src;
+        const isDash = /^127\.0\.0\.1:9119$/i.test(host) && (/^\/kanban\/?$/i.test(p) || /^\/?$/i.test(p));
+        if (isDash) {
+          broadcastViewer({ path: p === '/kanban' ? '/kanban' : '/', title: /\/kanban/i.test(p) ? 'KANBAN BOARD' : 'HERMES DASHBOARD' });
+        } else {
+          broadcastSummon({
+            media: body.media || 'iframe',
+            src, title: (body.title || 'INCOMING FEED'),
+            position: ['left', 'right', 'center'].includes(body.position) ? body.position : 'center',
+          });
+        }
+      }
       return sendJson(res, 200, { ok: true, sent_to: hudClients.size });
     }
 
@@ -674,7 +707,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    let f = path.join(__dir, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);
+    // '/' now serves the HUD directly (the old public/index.html was removed as legacy).
+    // /hud/ still works via the directory fallback below for back-compat links.
+    let f = path.join(__dir, 'public', req.url === '/' ? 'hud/index.html' : req.url.split('?')[0]);
     // If the URL resolves to a directory (e.g. `/hud/`), serve its index.html.
     if (fs.existsSync(f) && fs.statSync(f).isDirectory()) f = path.join(f, 'index.html');
     if (!f.startsWith(path.join(__dir, 'public')) || !fs.existsSync(f)) {

@@ -9,15 +9,15 @@ an explicit description wins immediately.
 HUD_DISPLAY = {
     "name": "hud_display",
     "description": (
-        "Display a video, webpage, or image ON THE USER'S SCREEN as a "
-        "holographic panel on their Jarvis HUD. ALWAYS use this when the user "
-        "asks to show, display, pull up, open, or put any media or webpage "
-        "'on screen' or 'on my screen'. This is the ONLY way to show them "
-        "visual content - browser tools open pages invisibly and do NOT show "
-        "the user anything. YouTube watch/short URLs embed automatically as "
-        "playable video. Special URLs: the Hermes kanban board is at "
-        "http://127.0.0.1:9119/kanban and the Hermes dashboard at "
-        "http://127.0.0.1:9119/ (use media=iframe)."
+        "Record the user's screen action. CALL THIS TOOL FIRST, BEFORE ANY OTHER TOOL, "
+        "whenever the user asks to show, display, pull up, open, put, or play anything on "
+        "screen ('show me', 'pull up', 'open', 'find and show', 'find a video of'). "
+        "Bundle a web search + this tool in ONE turn: search for the URL, then call "
+        "hud_display with the result. Do NOT reply with words before calling this tool; "
+        "call it, then confirm in one short sentence. YouTube video URLs embed as playable "
+        "video (media=video). For a webpage or the Hermes views use media=iframe. "
+        "Fixed targets: Hermes kanban board = http://127.0.0.1:9119/kanban ; "
+        "Hermes dashboard = http://127.0.0.1:9119/ ."
     ),
     "parameters": {
         "type": "object",
@@ -32,7 +32,7 @@ HUD_DISPLAY = {
             "position": {
                 "type": "string",
                 "enum": ["center", "left", "right"],
-                "description": "center for one large panel; left/right for smaller side panels when showing multiple things",
+                "description": "Default center (one large panel). Use left/right ONLY when showing multiple panels at once. The Hermes kanban/dashboard views open as a full window regardless of this value.",
             },
         },
         "required": ["media", "src", "title"],
@@ -41,6 +41,6 @@ HUD_DISPLAY = {
 
 HUD_DISMISS = {
     "name": "hud_dismiss",
-    "description": "Dismiss all holographic media panels from the user's Jarvis HUD screen. Use when they say to close, clear, or dismiss what's on screen.",
+    "description": "Close/clear/dismiss whatever is on the user's screen (HUD panels, the viewer, the Hermes dashboard). CALL THIS TOOL whenever the user says to close, clear, dismiss, remove, or hide something on screen ('close it', 'close that', 'close the panel', 'clear the screen'). Call it on the FIRST such request — do not reply in words first and do not ask for confirmation.",
     "parameters": {"type": "object", "properties": {}},
 }

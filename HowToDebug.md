@@ -251,15 +251,45 @@ node --check server.js public/app.js public/state.js
 
 ### 6.9 v0.22.5 tool-call JSON spoken + shown in chat — FIXED 2026-10-30
 - **Symptom:** tool calls appeared in the chat bubble AND were spoken aloud (e.g.
-  `Just a moment…{"tool":"hud_display",…}}`).
+  `Just a moment…{"tool":"hud_display",…}}`). Later saw `Closed the panel.{"calls":[{"name":…}]}`
+  leak too (the `calls`-wrapper shape the original regex missed).
 - **Cause:** v0.22.5 streams tool-call JSON INLINE in `message.delta` text, chunked (`segment`/`offset`);
   the old per-chunk regex couldn't match a partial JSON (no closing brace in the chunk), so fragments leaked.
+  Tool wrappers arrive under several root keys — `tool`/`name`, `calls`, `input`/`tool_use` (Anthropic),
+  `function`/`type":"function"` (OpenAI) — any of them can slip a per-shape match.
 - **Fix (server.js):** `cleanSpokenStream()` — a stateful, brace-balanced buffer that drops complete
-  `{"tool"…}`/`{"name"…}` blocks across chunk boundaries, retracts interim narration glued before them
+  `{"tool"…}`/`{"name"…}`/`{"calls"…}`/`{"input"…}`/`{"function"…}` blocks across chunk boundaries
+  (root-key set in `TOOL_JSON_RE`), retracts interim narration glued before them
   ("Just a moment…", "Okay, checking that…"), and flushes at turn end. Verified against real DB text
   (`profiles\lars\state.db` messages table) 2026-10-30.
 - **If it recurs:** check `profiles\lars\state.db` → `messages` for inline JSON in assistant content, and
-  re-test with the chunked repro (narration + `{` split across deltas).
+  re-test with the chunked repro (narration + `{` split across deltas). If a NEW wrapper key appears,
+  add it to `TOOL_JSON_RE` in server.js.
+
+### 6.10 model reasoning (chain-of-thought) leaked as spoken/chat — FIXED 2026-10-30
+- **Symptom:** Lars' internal "thinking" was read aloud and shown in the chat bubble (e.g. "We need to
+  call wi… Can't batch different calls? toolcall can batch…"), with huge first-token latency while the
+  model churned through reasoning before the real answer.
+- **Cause:** gpt-oss-120b on Cerebras streams chain-of-thought; with `reasoning_effort` above `none` the
+  CoT can arrive INLINE inside `message.delta` text (not as separate `reasoning.delta`), so the app
+  relayed it verbatim. `cleanSpokenStream()` only strips tool JSON, not reasoning.
+- **Fix (two layers):**
+  1. **Primary — `profiles\lars\config.yaml` → `model: reasoning_effort: none`.** Disables CoT, so no
+     reasoning is generated (valid levels: none, minimal, low, medium, high, xhigh, max, ultra;
+     confirmed in Hermes locale `cli.model.reasoning_effort.effort_none` = "disable reasoning").
+  2. **Defensive — `server.js` `cleanSpokenText()`** strips tag-wrapped reasoning blocks mirroring
+     Hermes' own `THINK_TAG_NAMES` (`think|thinking|reasoning|thought|REASONING_SCRATCHPAD|思考|反思|推理|推敲`):
+     full `<tag>…</tag>` blocks, unterminated tails, and stray tags. Only removes real `<>` tags —
+     spoken prose is untouched.
+- **Why both:** `reasoning_effort: none` is the root fix for a voice agent. But this exact model setup
+  (gpt-oss-120b / api.cerebras.ai / custom provider in `lars/config.yaml`) may be reused for OTHER
+  purposes where `low` (or higher) reasoning is wanted. If so, the CoT can leak again for those — the
+  defensive strip in `cleanSpokenText()` catches tag-wrapped reasoning regardless of effort. If a future
+  model emits UNTAGGED CoT inline (like gpt-oss did), `none` is the only reliable guard — keep that in
+  mind and re-set `reasoning_effort` accordingly per use.
+- **If it recurs:** confirm `config.yaml` has `reasoning_effort: none`, restart the `:9119` dashboard AND
+  start a NEW Lars session (config is read at session start), then re-test with a request that previously
+  leaked (e.g. "close it" twice). Inspect `state.db` → `messages` assistant content for reasoning text.
 
 ### 6.8 Hermes v0.22.5 session ownership — Desktop/Dashboard refuse to open the app's session
 - **Symptom:** app chat works, but in Hermes Desktop the session shows stored turns with a persistent
@@ -311,7 +341,7 @@ The agent's `terminal` tool here runs **Git Bash** (regardless of Zed defaults):
   only what survives `cleanSpokenText()` (tool narration, `<HUD …>` tags, URLs, JSON are stripped).
 - Token is **per dashboard start** unless `HERMES_DASHBOARD_SESSION_TOKEN` is set — that's why the
   VBS sets it. Re-read the page after any dashboard restart (the app does this automatically).
-- `app.js`/`state.js` are loaded verbatim by BOTH `/` and `/hud/` — one voice engine.
+- `app.js`/`state.js` are loaded verbatim by the HUD (`/` = `/hud/` since the legacy page was removed) — one voice engine.
 - The single listening gate is `canListen() = armed && !micMuted && !stopped && !testMode`;
   Space is bound **exactly once** (app.js) — never rebind Space inside the HUD's inline scripts.
 - **One persistent Lars session — the app's own Hermes session.** `server.js` does `session.create`

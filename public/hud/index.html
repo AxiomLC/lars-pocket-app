@@ -157,7 +157,11 @@ body.booted header{animation:panelIn .4s backwards}
 #grid.dolly{transform:scale(1.02); filter:brightness(.7)}
 .holo{position:absolute; pointer-events:auto; transform-style:preserve-3d;
   --enterRotY:-20deg; --bankX:0px;
-  width:min(62vw,900px); height:min(58vh,540px);
+  /* CENTER panel default (+15%: 900x540 -> 1035x621). Used only for internal
+     Hermes :9119 routes that are NOT kanban/root — kanban & the Hermes dashboard
+     go to the #viewer modal (viewer-only), never here. External web-search media
+     (video/webpage/image) uses .media169 below instead of this fixed height. */
+  width:min(62vw,1035px); height:min(58vh,621px);
   left:50%; top:45%; translate:-50% -50%;
   background:#081523f2; border:1px solid var(--cyan-dim);
   box-shadow:0 0 40px #00e5ff33, inset 0 0 60px #00e5ff0a;
@@ -217,7 +221,10 @@ body.booted header{animation:panelIn .4s backwards}
 
 /* ---------------- mobile / narrow screens ---------------- */
 /* media panels: standard 16:9; app panels (kanban etc.) keep flexible sizing */
-.holo.media169{width:min(56vw,820px); height:auto; aspect-ratio:16/9}
+/* CENTER media panel (+15% wide: 820 -> 943), standard 16:9 landscape — used for
+   web-search video/image/webpage results shown in the central holo panel.
+   Kanban/dashboard are viewer-only and never use this. */
+.holo.media169{width:min(56vw,943px); height:auto; aspect-ratio:16/9}
 .holo.pos-left.media169,.holo.pos-right.media169{width:min(40vw,560px); height:auto}
 .holoBar{cursor:grab; user-select:none; touch-action:none}
 .holo.dragging{animation:none!important}
@@ -310,7 +317,6 @@ footer{
     <div class="panel"><h2><span>VIEWS</span><span class="num">04</span></h2>
       <button class="btn viewBtn" onclick="openView('KANBAN','/kanban')">▸ KANBAN BOARD</button>
       <button class="btn viewBtn" onclick="openView('HERMES DASHBOARD','/')">▸ HERMES DASHBOARD</button>
-      <button class="btn viewBtn" onclick="openView('CHAT','/chat')">▸ DASHBOARD CHAT</button>
     </div>
 
   </div>
@@ -494,7 +500,10 @@ function connectSummon(){
   es.onopen=()=>{$("wsDot").className="dot on";$("wsState").textContent="online";$("connState").textContent="LINK ACTIVE";$("footMsg").textContent="HUD LINK CONNECTED";$("stkSse").textContent="LIVE";$("stkSse").className="ok"};
   es.onerror=()=>{$("wsDot").className="dot off";$("wsState").textContent="offline";$("connState").textContent="LINK DOWN";$("stkSse").textContent="DOWN";$("stkSse").className="err"};
   es.addEventListener("summon_panel",ev=>{try{summonPanel(JSON.parse(ev.data))}catch{}});
-  es.addEventListener("dismiss_panels",()=>dismissAllPanels());
+  es.addEventListener("summon_viewer",ev=>{try{const d=JSON.parse(ev.data);openView(d.title||"VIEW",d.path||"/")}catch{}});
+  // "close it" closes any holo panels AND the big viewer modal (so a voice
+  // hud_dismiss also clears a Kanban/dashboard view summoned to the viewer).
+  es.addEventListener("dismiss_panels",()=>{dismissAllPanels();closeView();});
 }
 connectSummon();
 
@@ -677,6 +686,12 @@ function summonPanel(opts){
   if(key===lastSummon.key && Date.now()-lastSummon.t<8000) return null;
   lastSummon={key, t:Date.now()};
   const position=["left","right","center"].includes(o.position)?o.position:"center";
+  // Central panel is single-instance: a new center panel closes any existing center panel
+  // first (so web-search / media results never stack on top of each other). Left/right panels
+  // and the viewer are untouched and can coexist normally.
+  if (position === 'center') {
+    document.querySelectorAll('.holo.pos-center').forEach(dismissPanel);
+  }
   const isApp=/^\//.test(src)||/:9119/.test(src);          // internal Hermes route => app panel
   const appPath=isApp?(src.replace(/^https?:\/\/[^/]+/,"")||"/"):null;
   const appBare=isApp&&appPath!=="/";                       // bare via /dash proxy; dashboard root keeps its menu

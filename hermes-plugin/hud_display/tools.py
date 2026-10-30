@@ -9,7 +9,7 @@ import urllib.request
 SUMMON_URL = os.environ.get("LARS_SUMMON_URL", "http://127.0.0.1:1122/api/summon")
 
 
-def _post(payload: dict) -> str:
+def _post(payload: dict[str, str]) -> str:
     token = os.environ.get("LARS_HUD_TOKEN", "")
     req = urllib.request.Request(
         SUMMON_URL, data=json.dumps(payload).encode(), method="POST",
@@ -27,7 +27,7 @@ def _post(payload: dict) -> str:
                        **{k: payload.get(k) for k in ("title", "media") if k in payload}})
 
 
-def hud_display(args: dict, **kwargs) -> str:
+def hud_display(args: dict[str, str], **kwargs: object) -> str:
     src = (args.get("src") or "").strip()
     if not src.startswith(("http://", "https://")):
         return json.dumps({"error": "src must be a full http(s) URL"})
@@ -39,5 +39,5 @@ def hud_display(args: dict, **kwargs) -> str:
     })
 
 
-def hud_dismiss(args: dict, **kwargs) -> str:
+def hud_dismiss(args: dict[str, str], **kwargs: object) -> str:
     return _post({"action": "dismiss"})
