@@ -9,6 +9,24 @@ YouTube videos, images, iframed Hermes views). Zero runtime dependencies (`node:
 
 ---
 
+## **Reusable voice core (grab & reuse)**
+
+The point of this app is a **portable voice core** you can lift and drop behind any other UI or
+harness. It does three simple things, each separately swappable:
+
+1. **STT** — Web Speech API in the browser (no server, no key).
+2. **TTS** — Pocket TTS, streamed and sentence-chunked for gapless playback.
+3. **LLM rail** — fast streaming chat (e.g. Cerebras gpt-oss) behind one `/api/chat` OpenAI-SSE
+   endpoint; swap brains via the `BRAIN` switch.
+
+Plus the glue that makes it feel human: **barge-in** (STREAMING), **echo defence** (so Lars never
+hears itself) and a small **state machine** (idle → listening → thinking → speaking).
+
+The HUD, Holo Panels and viewer are just *consumers* of this core — not part of it. Grab
+`app.js` / `state.js` / `server.js`'s voice paths and rebuild the UI however you like.
+
+---
+
 ## What it is
 
 Talk to Lars (or type). Lars replies out loud, sentence by sentence, chunked and played as it
@@ -127,7 +145,7 @@ npm start          :: → http://localhost:1122
 - `curl http://127.0.0.1:1133/health` → Pocket TTS OK
 - `curl http://localhost:1122/api/config` → shows brain / profile / pocketUp / hermesUrl
 - `curl -s http://127.0.0.1:9119/ | grep __HERMES_SESSION_TOKEN` → dashboard has the token page
-- Open `http://localhost:1122/hud/` — click **VOICE CHAT**, then the ring / Space, and talk.
+- Open `http://localhost:1122` — click **VOICE CHAT**, then the ring / Space, and talk.
 - Say: *"pull up the kanban on screen"*, *"find a video of Hikaru playing chess and play it in
   the HUD"*, *"open Wikipedia on screen"*.
 
@@ -138,7 +156,7 @@ npm start          :: → http://localhost:1122
 | Path | Purpose |
 |---|---|
 | `server.js` | `node:http` server: UI static, `/api/chat` (Hermes/Cerebras SSE), `/api/tts` proxy, `/api/summon` + `/events` HUD broadcast, `/api/embed` iframe strip-proxy, `/api/config`, `/api/log` mirror |
-| `public/` | `index.html` (legacy voice page), `app.js` + `state.js` (voice engine), `hud/index.html` (HUD) |
+| `public/` | `app.js` + `state.js` (portable voice engine) and `hud/index.html` (the HUD, served at `/`) |
 | `hermes-plugin/hud_display/` | Hermes **tool plugin** (the HUD's command side — gives Lars `hud_display` / `hud_dismiss`). Must be **hand-copied** to `profiles\lars\plugins\hud_display\` + dashboard restart on every update (not live-linked — see §2) |
 | `start.bat` | Launcher: Pocket TTS (if down) + UI + browser — never touches Hermes |
 | `HowToDebug.md` | **Debug manual for future AI/humans**: log map, CLI kit, failure modes, Windows/Chrome watch-outs |

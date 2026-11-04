@@ -152,6 +152,11 @@ function connectHermes() {
         hermesOnEvent('message.delta', params);
       } else if (type === 'message.complete') {
         hermesOnEvent('message.complete', params);
+      } else if (type === 'message.interim') {
+        // Interim narration is gpt-oss's "should I call a tool?" thinking-inline; it is
+        // never meant to be spoken (the same text also arrives as message.delta, which the
+        // tool-planning strip in cleanSpokenText removes). Ignore it here entirely so it
+        // is never treated as a turn and never logged as a novel event kind.
       } else if (type === 'gateway.ready') {
         hermesReady = true;
         console.log('[hermes] gateway.ready');
@@ -319,6 +324,18 @@ function cleanSpokenText(raw) {
   t = t.replace(new RegExp(`<${THINK_TAGS}[^>]*>[\s\S]*?<\/${THINK_TAGS}>`, 'gi'), ' '); // full blocks
   t = t.replace(new RegExp(`(?:^|\n)[ \t]*<${THINK_TAGS}[^>]*>[\s\S]*`, 'gi'), ' ');      // unterminated tail
   t = t.replace(new RegExp(`<\/?${THINK_TAGS}>\s*`, 'gi'), ' ');                            // stray/orphan tags
+  // Strip model tool-planning narration — gpt-oss emits its "should I call a tool?"
+  // interim thoughts inline as message.delta (same text also arrives as message.interim).
+  // These peak into planning and are never spoken. Only strip when a planning verb is
+  // immediately followed by a known tool, so real speech ("we need to call a plumber")
+  // is untouched. Handles truncated tails ("We need to call wi…") at chunk boundaries too.
+  // Strip model tool-planning narration — gpt-oss emits its "should I call a tool?"
+  // interim thoughts inline as message.delta (same text also arrives as message.interim).
+  // These peak into planning and are never spoken. Only strip when a planning verb is
+  // immediately followed by a known tool, so real speech ("we need to call a plumber")
+  // is untouched. Handles truncated tails ("We need to call wi…") at chunk boundaries too.
+  t = t.replace(/(?:we|i|it|you|they)?\s*(?:need(?:ed|s)? to|should|'ll|can|could|have to|has to|'ve got to|going to|gonna|want to|must|'re going to|'m going to|should we|can we)\s+(?:call|use|invoke|run|trigger|execute|open|try)\s+(?:the\s+)?(?:hud_display|hud_dismiss|web_search|tool_search|browser_navigate|tool_call|hud)\b/gi, ' ');
+  t = t.replace(/(?:we|i|it|you|they)?\s*(?:need(?:ed|s)? to|should|'ll|can|could|have to|has to|'ve got to|going to|gonna|want to|must|'re going to|'m going to|should we|can we)\s+(?:call|use|invoke|run|trigger|execute|open|try)\s+(?:the\s+)?(?:hud_display|hud_dismiss|web_search|tool_search|browser_navigate|tool_call|hud)\w*/gi, ' ');
   // known tool-call narration + interim comms prefixes
   t = t.replace(/\b(?:hud_display|hud_dismiss|web_search|browser_navigate)\b[\s,]*/gi, ' ');
   // markdown/URL noise
@@ -638,24 +655,32 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/summon') {
       let body = {};
       try { body = JSON.parse(await readBody(req)) || {}; } catch {}
-      if (body.action === 'dismiss') broadcastDismiss();
+      if (body.action === 'dismiss') {
+        hlog(`summon: DISMISS action`);
+        broadcastDismiss();
+      }
       else {
         const src = body.src || '';
+        const pos = ['left', 'right', 'center'].includes(body.position) ? body.position : 'center';
+        let m = src.match(/^https?:\/\/([^\/?#]+)(\/[^ \?#]*)?(?:[\?#].*)?$/i);
+        const host = m ? m[1] : '';
+        const p = m ? (m[2] || '/') : src;
+        // Kanban board, the Hermes dashboard root, or the dashboard app path all route to
+        // the big #viewer modal (viewer-only). Accept both 127.0.0.1 and localhost hosts.
+        const isDashHost = /^(?:127\.0\.0\.1|localhost):9119$/i.test(host);
+        const isDash = isDashHost && (/^\/kanban\/?$/i.test(p) || /^\/?$/i.test(p) || /^\/dashboard\/?$/i.test(p));
+        hlog(`summon: src="${src}" host="${host}" path="${p}" media="${body.media || 'iframe'}" pos=${pos} -> ${isDash ? 'VIEWER' : 'HOLO'}`);
         // Internal Hermes dashboard views (Kanban board, dashboard root) are detected
         // here and routed to the big #viewer modal instead of a floating holo panel.
         // Lars still calls hud_display exactly as before — this is a server-side shunt
         // so a "pull up the kanban" request becomes a proper full-window view.
-        let m = src.match(/^https?:\/\/([^\/?#]+)(\/[^ \?#]*)?(?:[\?#].*)?$/i);
-        const host = m ? m[1] : '';
-        const p = m ? (m[2] || '/') : src;
-        const isDash = /^127\.0\.0\.1:9119$/i.test(host) && (/^\/kanban\/?$/i.test(p) || /^\/?$/i.test(p));
         if (isDash) {
           broadcastViewer({ path: p === '/kanban' ? '/kanban' : '/', title: /\/kanban/i.test(p) ? 'KANBAN BOARD' : 'HERMES DASHBOARD' });
         } else {
           broadcastSummon({
             media: body.media || 'iframe',
             src, title: (body.title || 'INCOMING FEED'),
-            position: ['left', 'right', 'center'].includes(body.position) ? body.position : 'center',
+            position: pos,
           });
         }
       }

@@ -1,7 +1,13 @@
 # HowToDebug — lars-pocket-app
 
-Debug manual for a future AI (or human) on **this Windows machine** (`C:\lars-pocket-app`).
-Written from real outages. The goal: from any symptom, get to the failing component in minutes.
+> **Environment note:** this is a debug manual for **this specific local machine** — a Windows
+> box running `lars-pocket-app` (`:1122`), which talks to a local **Hermes dashboard** (`:9119`)
+> driving the **`lars`** profile, backed by a **Cerebras LLM** (`gpt-oss-120b`), with **Pocket TTS**
+> (`:1133`) and in-browser **Web Speech STT**. Paths/commands below are Windows/MSYS-specific —
+> adjust them to your own stack (a different host, profile, provider, or TTS) accordingly.
+
+Debug manual for a future AI (or human) on **this Windows machine**. Written from real outages.
+The goal: from any symptom, get to the failing component in minutes.
 
 ---
 
