@@ -7,6 +7,8 @@ YouTube videos, images, iframed Hermes views). Zero runtime dependencies (`node:
 > **Beta v1.8** — voice to Hermes Lars with the top-down priority-chain voice controls
 > (STOP → MIC → STREAMING → VOICE CHAT) and the HUD as primary UI.
 
+![Lars HUD](Screenshot.png)
+
 ---
 
 ## **Reusable voice core (grab & reuse)**
